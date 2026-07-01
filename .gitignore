@@ -1,0 +1,90 @@
+# ========================
+# Python 编译产物
+# ========================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# ========================
+# 虚拟环境
+# ========================
+.venv/
+venv/
+env/
+ENV/
+
+# ========================
+# 测试缓存
+# ========================
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# ========================
+# 运行时产物
+# ========================
+logs/
+*.log
+nohup.out
+
+# ========================
+# 数据文件（敏感/大文件，不入库）
+# ========================
+config/config.json
+dataset/user_dict.txt
+dataset/my_dict.dic
+dataset/html_source/
+dataset/html_cleaned/
+dataset/html_blocks/
+dataset/rewriting_test_set.jsonl
+
+# ========================
+# 微调产物
+# ========================
+finetune/trained_reranker_single/
+finetune/wandb/
+
+# ========================
+# 模型权重 / 检查点
+# ========================
+*.pt
+*.pth
+*.bin
+*.onnx
+*.safetensors
+
+# ========================
+# 环境变量 / 敏感配置
+# ========================
+.env
+*.key
+# 注意：.env.example 是模板文件，必须入库
+
+# ========================
+# IDE / 编辑器配置
+# ========================
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# ========================
+# 操作系统缓存文件
+# ========================
+.DS_Store
+Thumbs.db
+desktop.ini
+ehthumbs.db
+
+# ========================
+# Jupyter Notebook 检查点
+# ========================
+.ipynb_checkpoints/

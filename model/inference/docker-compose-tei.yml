@@ -1,0 +1,54 @@
+# TEI (Text Embeddings Inference) Docker Compose 部署配置
+#
+# 使用方法：
+#   cd model/inference
+#   docker compose -f docker-compose-tei.yml up -d
+#
+# 服务端口：
+#   - Embedding 服务: http://localhost:8080
+#   - Reranker 服务:  http://localhost:8081
+#
+# 模型权重存储在 ./tei-data 卷中，避免重复下载。
+
+services:
+  # ======================== Embedding 模型 ========================
+  tei-embedding:
+    image: ghcr.io/huggingface/text-embeddings-inference:cuda-1.9
+    container_name: tei-embedding
+    ports:
+      - "8080:80"
+    volumes:
+      - ./tei-data:/data
+    command:
+      - --model-id=Qwen/Qwen3-Embedding-4B
+      - --max-batch-tokens=16384
+      - --max-concurrent-requests=512
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    restart: unless-stopped
+
+  # ======================== Reranker 模型 ========================
+  tei-reranker:
+    image: ghcr.io/huggingface/text-embeddings-inference:cuda-1.9
+    container_name: tei-reranker
+    ports:
+      - "8081:80"
+    volumes:
+      - ./tei-data:/data
+    command:
+      - --model-id=Qwen/Qwen3-Reranker-4B
+      - --max-batch-tokens=16384
+      - --max-concurrent-requests=512
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    restart: unless-stopped

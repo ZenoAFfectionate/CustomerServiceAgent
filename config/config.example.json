@@ -1,0 +1,35 @@
+{
+  "embed_model": "Qwen/Qwen3-Embedding-4B",
+  "rerank_model": "Qwen/Qwen3-Reranker-4B",
+  "llm_model": "THUDM/glm-4-9b-chat",
+  "tei_embed_url": "http://localhost:8080",
+  "tei_rerank_url": "http://localhost:8081",
+  "vllm_api_url": "http://localhost:8011/v1/chat/completions",
+  "vllm_api_servers": [
+    {"url": "http://localhost:8011/v1/chat/completions", "weight": 1}
+  ],
+  "vllm_timeout": 60,
+  "vllm_max_concurrent_requests": 32,
+  "vllm_batch_size": 32,
+  "device": "cuda:0",
+  "lang": "zh",
+  "max_node_words_embed": 4096,
+  "min_node_words_embed": 48,
+  "log_level": "INFO",
+  "log_dir": "logs",
+  "env_default": "dev",
+  "env_config": {
+    "dev": {
+      "milvus_host": "127.0.0.1",
+      "es_host": "127.0.0.1",
+      "collection_name": "htmlrag_dev",
+      "index_name": "htmlrag_dev"
+    },
+    "prod": {
+      "milvus_host": "127.0.0.1",
+      "es_host": "127.0.0.1",
+      "collection_name": "htmlrag_prod",
+      "index_name": "htmlrag_prod"
+    }
+  }
+}
