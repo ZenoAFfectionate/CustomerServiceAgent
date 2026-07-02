@@ -11,6 +11,7 @@ setup(
     name="hello-agents",
     use_scm_version=True,
     setup_requires=['setuptools_scm'],
-    packages=find_packages(include=['hello_agents*']),
+    packages=["hello_agents"],
+    package_dir={"hello_agents": "src"},
     python_requires=">=3.10",
 )

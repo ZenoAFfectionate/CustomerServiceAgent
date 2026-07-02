@@ -323,10 +323,25 @@ if __name__ == "__main__":
     parser.add_argument("--num-hard-negatives", type=int, default=2, help="困难负样本数")
     parser.add_argument("--num-random-negatives", type=int, default=2, help="随机负样本数")
     parser.add_argument("--output-dir", type=str, default="dataset/")
+    parser.add_argument(
+        "--rag-backend", type=str, default="milvus", choices=["milvus", "local"],
+        help="检索使用的向量库后端：milvus（默认，复用 --milvus-host/--collection-name）或 local（rag/ 本地降级库）",
+    )
     args = parser.parse_args()
 
     os.makedirs(args.output_dir, exist_ok=True)
     device = "cuda:0" if torch.cuda.is_available() else "cpu"
+
+    # 在导入 rag.* 之前设置环境变量，确保 rag/config.py 读取到与本脚本一致的
+    # Milvus host / collection name（RAG_CONFIG 在模块导入时即计算完毕）。
+    os.environ.setdefault("RAG_VECTOR_BACKEND", args.rag_backend)
+    os.environ.setdefault("RAG_KEYWORD_BACKEND", "es" if args.rag_backend == "milvus" else "local")
+    os.environ.setdefault("MILVUS_HOST_DEV", args.milvus_host)
+    os.environ.setdefault("MILVUS_COLLECTION_DEV", args.collection_name)
+
+    from rag.retrieval import milvus_search as rag_milvus_search
+    from rag.retrieval import es_search as rag_es_search
+    from rag.retrieval.fusion import fuse as rag_fuse
 
     logger.info("📦 加载 Embedder 模型...")
     embedder = HuggingFaceEmbeddings(model_name=args.embed_model, model_kwargs={"device": device})
@@ -355,12 +370,18 @@ if __name__ == "__main__":
         question = res[0]["question"]
         logger.info(f"🔍 处理样本 {idx}: {question[:50]}")
 
-        # TODO: 从 rag/ 模块导入检索函数
-        # from rag.retrieval import query_milvus_blocks, query_es_blocks
-        # milvus_results = query_milvus_blocks(question, embedder, top_k=args.top_k)
-        # es_results = query_es_blocks(question, top_k=args.top_k)
-        # chunks = milvus_results + es_results
-        chunks = [res[0]]  # 临时使用当前文档
+        # 接入 rag/ 真实双模检索（对齐 TODO.md T6：回填依赖）：
+        # 向量检索 + 关键词检索 → 融合去重，取代原先 chunks = [res[0]] 的占位实现。
+        # 检索到的 rag.schema.DocBlock 字段与本文件的 chunk dict 字段（text/page_name/
+        # title/page_url/summary）兼容，可直接传入 format_chunk_for_reranker。
+        try:
+            milvus_results = rag_milvus_search.search(question, top_k=args.top_k)
+            es_results = rag_es_search.search(question, top_k=args.top_k)
+            fused_blocks = rag_fuse([milvus_results, es_results])
+            chunks = [b.to_dict(with_embedding=False) for b in fused_blocks] or [res[0]]
+        except Exception as e:
+            logger.warning(f"⚠️ rag/ 检索失败（{e}），回退为当前文档单条占位")
+            chunks = [res[0]]
 
         if process_one_sample_v2(chunks, all_chunks, args.output_dir,
                                   args.num_hard_negatives, args.num_random_negatives):

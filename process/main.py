@@ -28,7 +28,7 @@ import argparse
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 from html_utils import process_html_file, build_block_tree, parse_time_tag
-from text_process_utils import generate_block_documents, save_doc_meta_to_block_dir
+from text_process import generate_block_documents, save_doc_meta_to_block_dir  # [Optimized] 修正模块名：实际文件为 text_process.py（原 text_process_utils 已重命名）
 from utils.config import CONFIG, logger
 
 

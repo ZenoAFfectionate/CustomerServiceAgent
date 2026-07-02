@@ -12,10 +12,16 @@ Milvus/ES 等数据库配置由 rag/ 模块自行管理，不在此处。
 """
 import json
 import os
-import aiohttp
 import asyncio
 import logging
 from logging.handlers import TimedRotatingFileHandler
+
+# [Optimized] aiohttp 仅用于异步 LLM 摘要调用（generate_summary_vllm_async），
+# 未安装时降级为 None 占位，避免阻塞整个 process/ 模块导入（与 dotenv 导入保持一致的容错策略）。
+try:
+    import aiohttp
+except ImportError:
+    aiohttp = None  # type: ignore
 
 # ======================== 路径计算 ========================
 current_file_dir = os.path.dirname(os.path.abspath(__file__))
@@ -135,6 +141,8 @@ sem = asyncio.Semaphore(CONFIG.get("vllm_max_concurrent_requests", 32))
 
 async def get_aiohttp_session():
     """获取或创建全局 aiohttp 会话。"""
+    if aiohttp is None:  # [Optimized] aiohttp 未安装时给出明确错误而非 AttributeError
+        raise RuntimeError("aiohttp 未安装，异步 LLM 调用不可用。请执行 pip install aiohttp")
     global _session
     if _session is None or _session.closed:
         timeout = aiohttp.ClientTimeout(total=CONFIG.get("vllm_timeout", 60))

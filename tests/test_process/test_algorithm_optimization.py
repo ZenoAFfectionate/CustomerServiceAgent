@@ -31,7 +31,7 @@ from html_utils import (
     _find_heading_parent,
     clean_html_text,
 )
-from text_process_utils import (
+from text_process import (
     extract_title_from_block,
     _split_table_into_chunks,
     _extract_mixed_content,
@@ -409,7 +409,7 @@ class TestEndToEndWithComprehensiveHTML:
 
     @pytest.fixture
     def comprehensive_doc_meta(self):
-        from text_process_utils import generate_block_documents
+        from text_process import generate_block_documents
         html_path = os.path.join(
             os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
             "process", "dataset", "test_comprehensive.html"

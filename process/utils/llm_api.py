@@ -25,7 +25,12 @@ import asyncio
 import random
 from typing import List, Dict, Optional, Set
 
-import aiohttp
+# [Optimized] aiohttp 仅用于异步函数（generate_summary_vllm_async / rewrite_query_vllm_async），
+# 未安装时降级为 None，同步函数不受影响（与 config.py 保持一致的容错策略）。
+try:
+    import aiohttp
+except ImportError:
+    aiohttp = None  # type: ignore
 
 from utils.config import CONFIG, sem, logger, OLLAMA_API_URL
 
@@ -388,6 +393,8 @@ def weighted_sample_without_replacement(servers: List[Dict], tried: Set[str]) ->
 
 async def call_vllm_with_retry_weighted(payload: dict, timeout: int = 15, max_retries: Optional[int] = None) -> dict:
     """带权重的 vLLM 异步调用，失败自动重试。"""
+    if aiohttp is None:  # [Optimized] aiohttp 未安装时提前给出明确错误
+        raise RuntimeError("aiohttp 未安装，异步 LLM 调用不可用。请执行 pip install aiohttp")
     tried_urls = set()
     retries = max_retries or len(VLLM_SERVERS)
     errors = []
@@ -483,6 +490,8 @@ async def rewrite_query_ollama_async(dialogue: list, final_query: str, model: st
     }
 
     try:
+        if aiohttp is None:  # [Optimized] aiohttp 未安装时提前给出明确错误
+            raise RuntimeError("aiohttp 未安装，异步 Query 重写不可用。请执行 pip install aiohttp")
         async with sem:
             start = time.time()
             async with aiohttp.ClientSession() as session:

@@ -1,13 +1,13 @@
 # -*- coding: utf-8 -*-
 """
-text_process_utils 模块单元测试。
+text_process 模块单元测试。
 
 覆盖核心函数：clean_text、clean_invisible、extract_title_from_block、
 build_optimal_jieba_query、parse_time、str_sim、deduplicate_ranked_blocks_pal、
 save_doc_meta_to_block_dir。
 
 运行方式：
-    PYTHONPATH=src pytest tests/test_text_process_utils.py -v
+    PYTHONPATH=src pytest tests/test_text_process.py -v
 """
 
 import os
@@ -18,7 +18,7 @@ from datetime import datetime
 import pytest
 from bs4 import BeautifulSoup
 
-from text_process_utils import (
+from text_process import (
     clean_text,
     clean_invisible,
     extract_title_from_block,

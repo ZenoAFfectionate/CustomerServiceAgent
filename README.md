@@ -6,8 +6,8 @@
   <img src="https://img.shields.io/badge/python-3.10+-blue.svg" alt="python"/>
   <img src="https://img.shields.io/badge/HtmlRAG-TheWebConf%202025-green.svg" alt="paper"/>
   <img src="https://img.shields.io/badge/inference-TEI-orange.svg" alt="tei"/>
-  <img src="https://img.shields.io/badge/RAG-RAGFlow-purple.svg" alt="ragflow"/>
-  <img src="https://img.shields.io/badge/Agent-Pi--Agent-red.svg" alt="pi-agent"/>
+  <img src="https://img.shields.io/badge/RAG-FastAPI%20%2B%20Milvus%2FES-purple.svg" alt="rag"/>
+  <img src="https://img.shields.io/badge/Agent-hello--agents-red.svg" alt="hello-agents"/>
   <img src="https://img.shields.io/badge/license-research--only-lightgrey.svg" alt="license"/>
 </p>
 
@@ -16,16 +16,16 @@
 ## 📑 目录导航
 
 - [📖 项目简介](#-项目简介)
+- [🧩 RAG 与 Agent 的职责划分与调用关系](#-rag-与-agent-的职责划分与调用关系)
 - [🎯 重点与难点](#-重点与难点核心看点)
-- [📂 目录结构](#-目录结构)
 - [🏗️ 技术架构详解](#️-技术架构详解)
   - [📦 process — HTML 数据处理与分块](#-process--html-数据处理与分块)
   - [🤖 model — 模型推理与训练](#-model--模型推理与训练)
   - [🔍 rag — RAG 检索增强生成](#-rag--rag-检索增强生成)
-  - [💬 agent — 智能体](#-agent--智能体)
+  - [💬 agent — 智能体框架](#-agent--智能体框架)
 - [🚀 快速开始](#-快速开始)
-- [🛠️ 技术栈](#️-技术栈)
 - [📋 项目状态](#-项目状态)
+- [🎬 Demo 展示](#-demo-展示)
 
 ---
 
@@ -45,8 +45,8 @@
 |------|---------|---------|
 | HTML 结构杂乱、无法直接检索 | 📦 `process/` | 对标 **HtmlRAG** 论文做无损清洗 + Block Tree 语义分块，保留 HTML 结构 |
 | 模型推理慢、部署复杂 | 🤖 `model/` | 用 **TEI** 框架一键部署 Qwen3 Embedding/Reranker，Flash Attention 加速 |
-| 检索不精准、召回率低 | 🔍 `rag/` | 基于 **RAGFlow** 的向量 + 关键词双模检索 + Reranker 精排 |
-| 客服机器人无法多轮对话 | 💬 `agent/` | 基于 **Pi-Agent** 的多轮问答，按需调用 RAG 工具 |
+| 检索不精准、召回率低 | 🔍 `rag/` | 自研向量 + 关键词双模检索 + 融合去重 + Reranker 精排（Milvus/ES/TEI，均含本地降级实现） |
+| 客服机器人无法多轮对话、不会调用工具办事 | 💬 `agent/` | 基于生产级多智能体框架 **hello-agents** 构建，具备工具调用、上下文工程、会话持久化等能力 |
 
 ### 🔄 全流程架构图
 
@@ -54,46 +54,7 @@
 
 #### 架构说明
 
-上图展示了从「原始 HTML 网页」到「用户精准问答」的完整数据流，共经历 **四个核心模块**，数据自左向右单向流动：
-
-```
-原始 HTML → [process 清洗分块] → 结构化知识块 JSON
-                                      ↓
-                              [model 向量化 + 精排]
-                                      ↓
-用户提问 → [rag 双模检索 + 融合去重 + Reranker 精排] → Top-K 文档
-                                      ↓
-                              [agent 多轮对话 + 工具调用] → 精准回答
-```
-
-**① process — 数据处理层（🟦 沉稳蓝）**
-
-原始 HTML 网页经 `main.py` 一键处理：先做**无损清洗**（移除 SVG/nav/script 等噪声标签、展开 `colspan`/`rowspan` 合并单元格、展开冗余嵌套包装），再做 **Block Tree 语义分块**（BFS 遍历 DOM 树、按 heading 层级拆分、表格按行切分、混合内容分离）。输出同时携带 `text`（纯文本）、`html_content`（保留 HTML 结构）与 `block_path`（块路径），为下游检索提供结构化输入。
-
-**② model — 模型推理层（🟩 森绿色）**
-
-采用 HuggingFace **TEI（Text Embeddings Inference）** 框架，以 Docker 一键部署两个推理服务：
-- **Qwen3-Embedding-4B**（端口 8080）：将知识块与用户 query 向量化，支持动态批处理与 Flash Attention 加速
-- **Qwen3-Reranker-4B**（端口 8081）：对检索候选文档做交叉编码精排，从 ~20 个候选中精选 Top-5
-
-同时支持 SFT 监督微调 + DPO 偏好优化，可训练领域专属 Reranker。
-
-**③ rag — 检索增强层（🟪 浅紫色）**
-
-基于 **RAGFlow** 构建，执行"双模检索 → 融合去重 → 精排"三步链路：
-- **向量检索**（Milvus）：语义匹配，"广告投放"能召回"推广策略"
-- **关键词检索**（Elasticsearch + IK 分词）：精确匹配，"千川"能命中"巨量千川"
-- **融合去重**：RRF 或加权融合两路结果，再用 TF-IDF + cosine 去除重复块
-- **Reranker 精排**：TEI Reranker 对融合后的候选集做二次排序
-
-**④ agent — 智能问答层（🟦 深沉蓝）**
-
-基于 **Pi-Agent** 构建，核心是「感知 → 决策 → 行动 → 观察」循环：
-- 接收用户问题后，先做 **Query 重写**（多轮对话指代补全："那个怎么办"→"广告限流后怎么办"）
-- Agent 自主判断是否需要检索，通过 **function calling** 调用 RAG 工具获取知识
-- 结合检索结果与对话记忆生成最终回答，支持多轮上下文与用户画像记忆
-
-> 💡 **架构亮点**：各模块职责单一、接口清晰——`process` 输出标准 JSON 块，`model` 提供嵌入与排序 API，`rag` 消费前两者产出检索结果，`agent` 编排调用。任一模块可独立替换或升级，不影响其他层。
+项目围绕「原始 HTML 知识 → 结构RAG 检索 → Agent 问答」主线，分为四层：**process** 对 HTML 做无损清洗与 Block Tree 语义分块，输出结构化 JSON 知识块；**model** 通过 TEI 框架一键部署 Qwen3-Embedding（端口 8080）与 Qwen3-Reranker（端口 8081）两个推理服务，同时支持 SFT + DPO 两阶段微调；**rag** 作为独立 FastAPI 服务（端口 8090），执行"向量检索 + 关键词检索 → RRF 融合去重 → Reranker 精排 → 生成融合"完整管线，每个组件均含本地降级实现、零外部依赖即可运行；**agent** 基于 hello-agents 框架，以 ReActAgent 循环编排多轮对话，通过 Tool Call 按需调用 rag 服务。各模块职责单一、接口清晰，任一模块可独立替换。
 
 ### 🎯 核心能力一览
 
@@ -102,8 +63,26 @@
 | 🧹 HTML 清洗与分块 | `process/` | 移除噪声标签、展开合并单元格、BFS 语义分块、LLM 摘要生成 |
 | 🤖 模型推理部署 | `model/` | TEI 部署 Qwen3-Embedding + Qwen3-Reranker，双 API 一体化 |
 | 🎓 模型微调优化 | `model/` | SFT 监督微调（多级标注 0/1/2）+ DPO 偏好优化 |
-| 🔍 RAG 检索增强 | `rag/` | 向量 + 关键词双模检索，融合去重后 Reranker 精排 |
-| 💬 智能问答 | `agent/` | 多轮对话、Query 重写、RAG 工具按需调用 |
+| 🔍 RAG 检索增强 | `rag/` | 双模检索（向量+关键词）融合去重后 Reranker 精排；提供 FastAPI 后端 + 轻量前端 + Agent 友好文档 |
+| 💬 智能问答框架 | `agent/` | hello-agents：ReAct/Reflection/Plan-Solve 多范式、工具调用、上下文工程、会话持久化、Skills 知识外化 |
+
+---
+
+## 🧩 RAG 与 Agent 的职责划分与调用关系
+
+> 本项目采用**服务与框架分离**的架构：`rag/` 是一个**独立部署的 HTTP 服务**（有自己的进程、端口、数据），`agent/` 是一个**智能体框架**（编排多轮对话与工具调用），二者通过**工具调用（Tool Call）**协议连接，而非直接函数导入耦合。
+
+| 维度 | `rag/`（检索服务） | `agent/`（智能体框架） |
+|------|---------------------|--------------------------|
+| **职责** | 知识库管理（文档上传/索引） + 检索（向量+关键词融合精排） + 生成（基于上下文回答） | 多轮对话管理、工具调用决策、上下文工程、会话持久化 |
+| **对外形态** | 独立 FastAPI 服务（`rag/api/main.py`），暴露 `/api/retrieve`、`/api/chat` 等 REST 接口 | Python 库（`hello_agents` 包），由业务代码 import 后编排 |
+| **技术栈** | FastAPI + Milvus/ES/TEI/vLLM（或本地降级实现） | hello-agents（`SimpleAgent`/`ReActAgent`/`ReflectionAgent`/`PlanSolveAgent`） |
+| **调用入口** | HTTP：`POST /api/retrieve`、`POST /api/chat`；或直接 Python 调用 `rag.pipeline.retrieve()`/`answer()` | `ReActAgent.run(query)` |
+| **启动脚本** | `scripts/run_RAGserver.sh` | `scripts/run_AGTserver.sh` |
+
+**推荐集成方式（Tool-based，见 [TODO.md](TODO.md) 难点追踪）**：将 `rag.pipeline.retrieve()`（或对 `rag/api` 的 HTTP 调用）封装为一个 hello-agents `Tool` 子类，注册进 `ToolRegistry`，交由 `ReActAgent` 在多轮对话中自主判断"是否需要检索"并调用——这样 `rag/` 服务可以独立开发、测试、部署、扩容，`agent/` 只需持有一个工具接口，两者松耦合、可分别演进。
+
+> 📌 **当前状态**：`rag/` 服务已完整可用（可独立启动并通过浏览器/接口体验问答）；`agent/` 框架已引入且自带测试通过；**两者之间的工具化调用集成代码尚待编写**，是 M4 里程碑的核心待办（详见 [TODO.md](TODO.md)）。
 
 ---
 
@@ -117,8 +96,8 @@
 | ② 复杂表格展开与图文混合内容分离 | `process/` | ⭐⭐⭐⭐ | ✅ |
 | ③ 中文电商领域的分词与去重适配 | `process/` | ⭐⭐⭐ | ✅ |
 | ④ Reranker 训练数据构造（困难负样本 + DPO） | `model/` | ⭐⭐⭐⭐ | ✅ |
-| ⑤ 向量 + 关键词双模检索融合 | `rag/` | ⭐⭐⭐⭐ | 🔲 |
-| ⑥ **RAG 如何注册给 Agent 按需调用** | `agent/` | ⭐⭐⭐⭐⭐ | 🔲 |
+| ⑤ 向量 + 关键词双模检索融合 | `rag/` | ⭐⭐⭐⭐ | ✅ |
+| ⑥ **RAG 如何注册给 Agent 按需调用** | `agent/` | ⭐⭐⭐⭐⭐ | 🔄 框架就位，集成待开发 |
 | ⑦ 端到端可量化评测体系 | 全局 | ⭐⭐⭐⭐ | 🔲 |
 
 下面对最核心的几个难点展开说明。
@@ -147,6 +126,14 @@
 - **困难负样本**：从**同页面不同段落**采样——主题相近但内容不同，最能锻炼模型的区分力；辅以随机负样本作为基础对照；
 - **两阶段训练**：先 **SFT** 学「绝对相关性分数」，再 **DPO** 在偏好对（chosen vs rejected）上学「相对排序」，无需显式奖励模型，收敛更稳。
 
+### 🔥 难点⑤：向量 + 关键词双模检索融合
+
+`rag/` 自研实现，核心是让语义检索（Milvus）和精确检索（Elasticsearch）的结果可比较、可合并：
+
+- **RRF（Reciprocal Rank Fusion）**：`score = Σ 1/(k+rank)`，无需归一化分数，鲁棒性好，为默认策略；
+- **加权融合**：对各路分数 Min-Max 归一化后按配置权重线性相加，适合已知两路可信度差异的场景；
+- **融合去重**：复用 `process/` 的 TF-IDF + cosine 相似度去重逻辑，按时间保留最新版本，避免同一知识块在两路都命中时重复出现。
+
 ### 🔥 难点⑥：RAG 如何注册给 Agent（本项目最大挑战，持续追踪）
 
 > 这是打通「检索能力」与「智能体决策」的关键，也是目前仍在攻坚的核心问题。
@@ -155,9 +142,9 @@
 
 | 方案 | 思路 | 适用 |
 |------|------|------|
-| A. Tool-based | 将 RAG 检索封装为 Agent Tool，通过 function calling 调用 | 复杂问题、需模型自主判断 |
+| A. Tool-based | 将 RAG 检索封装为 hello-agents `Tool`，通过 function calling 调用 | 复杂问题、需模型自主判断（推荐） |
 | B. Middleware | RAG 作为感知层中间件，自动注入检索结果 | 高频、确定性问答 |
-| C. Hybrid | 常见问题自动检索 + 复杂问题 Agent 主动调用 | 生产综合场景（倾向） |
+| C. Hybrid | 常见问题自动检索 + 复杂问题 Agent 主动调用 | 生产综合场景 |
 
 难点在于**触发策略**：过度检索会拖慢响应、引入噪声；漏检索则答非所问。详见 [TODO.md](TODO.md)。
 
@@ -165,76 +152,12 @@
 
 缺乏统一评测，就无法判断「每一次修改」到底带来了正收益还是负收益。规划了**四层评测体系**：
 
-```
-Layer 1 数据处理质量  →  噪声残留率 / 内容保留率 / 压缩比 / 分块合理性
-Layer 2 检索召回质量  →  Recall@K / MRR / NDCG@K / 延迟 P95
-Layer 3 精排质量      →  Top-1 命中率 / 排序改善幅度
-Layer 4 端到端回答    →  Accuracy / Faithfulness / Relevance（LLM-as-Judge）
-```
-
----
-
-## 📂 目录结构
-
-> 下述结构与仓库实际布局一致：`process/src/` 存放核心处理逻辑，`process/utils/` 存放通用工具（配置、LLM 客户端、分词词典）。
-
-```
-CustomerServiceAgent/
-│
-├── 📁 process/                           # HTML 数据处理与分块（仅负责"网页 → 知识块"）
-│   ├── src/                              #   核心处理逻辑
-│   │   ├── main.py                       #     全流程入口（清洗 + 分块，支持 --step 分步执行）
-│   │   ├── html_utils.py                 #     HTML 清洗与 Block Tree 分块（对标 HtmlRAG）
-│   │   ├── text_process_utils.py         #     文档块生成（block_path/html_content）+ 去重
-│   │   └── html_pruner.py                #     两阶段块树剪枝（HtmlRAG 论文核心）
-│   ├── utils/                            #   通用工具 / 基础设施
-│   │   ├── config.py                     #     process 专属配置加载 + 日志
-│   │   ├── llm_api.py                    #     LLM 摘要 / 问题生成 / Query 重写（vLLM/ChatGLM）
-│   │   └── jieba_util.py                 #     jieba 电商领域自定义词典构建
-│   ├── dataset/                          #   数据（词典、HTML 源、测试 HTML）
-│   └── logs/                             #   运行日志
-│
-├── 📁 model/                             # 模型推理与训练
-│   ├── inference/                        #   TEI 推理部署
-│   │   ├── tei_client.py                 #     TEI 客户端（embed / rerank / health_check）
-│   │   └── docker-compose-tei.yml        #     Docker Compose 一键部署
-│   ├── trainer/                          #   模型微调
-│   │   ├── reranker_ft.py                #     SFT 监督微调（CrossEncoder）
-│   │   └── reranker_dpo.py               #     DPO 偏好优化
-│   └── utils/                            #   训练数据工具
-│       └── build_dataset.py              #     数据集构造（Pointwise/Pairwise/DPO 三格式）
-│
-├── 📁 rag/                               # RAG 检索增强生成（基于 RAGFlow，待开发）
-├── 📁 agent/                             # 智能体（基于 Pi-Agent，待开发）
-│
-├── 📁 config/                            # 全局配置管理
-│   ├── config_loader.py                  #   项目级配置加载器（供 model/ 等使用）
-│   ├── config.json                       #   结构化配置（不入库）
-│   └── config.example.json               #   配置模板
-│
-├── 📁 tests/                             # 单元测试（~245 个用例）
-│   ├── conftest.py                       #   pytest 共享配置
-│   ├── test_html_utils*.py               #   HTML 清洗与分块测试
-│   ├── test_text_process_utils*.py       #   文本处理 / 去重测试
-│   ├── test_jieba_util.py                #   jieba 词典测试
-│   ├── test_algorithm_optimization.py    #   算法优化验证
-│   └── test_algorithm_completeness.py    #   算法完整性补充
-│
-├── 📁 scripts/                           # 运行脚本
-│   ├── process_HTMLdata.sh                #   数据处理流水线（清洗 → 分块）
-│   ├── build_JIEBAdict.sh                 #   jieba 词典构建
-│   ├── run_AGTserver.sh                   #   Agent 服务启动（待实现）
-│   └── run_RAGserver.sh                   #   RAG 服务启动（待实现）
-│
-├── 📁 images/                            # 图片资源
-│   ├── overview.png                      #   全流程架构图
-│   └── IMAGE_PROMPT.md                   #   架构图 AI 生图提示词
-│
-├── 📄 .env.example                       # 环境变量模板
-├── 📄 requirements.txt                   # Python 依赖
-├── 📄 TODO.md                            # 项目规划与进度
-└── 📄 README.md                          # 本文件
-```
+| 层级 | 评测对象 | 指标 |
+|------|---------|------|
+| Layer 1 | 数据处理质量 | 噪声残留率 / 内容保留率 / 压缩比 / 分块合理性 |
+| Layer 2 | 检索召回质量 | Recall@K / MRR / NDCG@K / 延迟 P95 |
+| Layer 3 | 精排质量 | Top-1 命中率 / 排序改善幅度 |
+| Layer 4 | 端到端回答 | Accuracy / Faithfulness / Relevance（LLM-as-Judge） |
 
 ---
 
@@ -318,16 +241,10 @@ Qwen3-Embedding / Qwen3-Reranker 系列提供 **0.6B / 4B / 8B** 三个尺寸，
 
 #### 模型微调策略（两阶段）
 
-```
-Stage 1: SFT 监督微调（reranker_ft.py）
-  📊 数据: reranker_qa_pointwise.jsonl（多级标注 0/1/2）
-  🎯 目标: 学习绝对相关性分数
-         │
-         ▼
-Stage 2: DPO 偏好优化（reranker_dpo.py）
-  📊 数据: reranker_qa_dpo.jsonl（chosen vs rejected 偏好对）
-  🎯 目标: 在 SFT 基础上学习相对排序偏好
-```
+| 阶段 | 脚本 | 训练数据 | 目标 |
+|------|------|---------|------|
+| **Stage 1: SFT 监督微调** | `reranker_ft.py` | `reranker_qa_pointwise.jsonl`（多级标注 0/1/2） | 学习绝对相关性分数 |
+| **Stage 2: DPO 偏好优化** | `reranker_dpo.py` | `reranker_qa_dpo.jsonl`（chosen vs rejected 偏好对） | 在 SFT 基础上学习相对排序偏好 |
 
 | 策略 | Loss 函数 | 优势 |
 |------|---------|------|
@@ -347,58 +264,39 @@ Stage 2: DPO 偏好优化（reranker_dpo.py）
 
 ### 🔍 rag — RAG 检索增强生成
 
-基于 [RAGFlow](https://github.com/infiniflow/ragflow) 构建（🔲 待开发），设计检索链路：
+**已完成**，自研检索增强生成框架（索引/检索/融合/精排/生成均可独立替换，非基于第三方 RAG 框架），**以独立 HTTP 服务形式对外提供能力**（详见「RAG 与 Agent 的职责划分」），设计检索链路：
 
-```
-用户问题
-    │
-    ▼
-┌──────────────────────────────────────┐
-│  Query 重写（多轮对话指代补全）        │
-│  "那个怎么办" → "广告限流后怎么办"     │
-└──────────┬───────────────────────────┘
-           │
-     ┌─────┴─────┐
-     ▼           ▼
-┌─────────┐ ┌─────────┐
-│ Milvus  │ │   ES    │
-│ 向量检索 │ │ 关键词  │
-│ (语义)  │ │ (精确)  │
-└────┬────┘ └────┬────┘
-     └─────┬─────┘
-           ▼
-┌──────────────────┐
-│  融合去重         │
-│  (TF-IDF + 时间)  │
-└────────┬─────────┘
-         ▼
-┌──────────────────┐
-│  Reranker 精排    │
-│  (Qwen3-Reranker) │
-└────────┬─────────┘
-         ▼
-    Top-K 文档块
-```
+![RAG 检索增强生成业务流程](images/workflow.png)
+
 
 | 能力 | 技术 | 说明 |
 |------|------|------|
-| 🗄️ 向量检索 | Milvus 2.x + Qwen3-Embedding | 语义理解，"广告投放" 匹配 "推广策略" |
-| 🔑 关键词检索 | Elasticsearch 8.x + IK 分词 | 精确匹配，"千川" 匹配 "巨量千川" |
-| 🔄 融合去重 | TF-IDF + cosine 相似度 | 消除双模检索的重复结果 |
-| 📊 Reranker 精排 | Qwen3-Reranker via TEI | 从 ~20 个候选中精选 Top-5 |
+| 🗄️ 向量检索 | Milvus 2.x + Qwen3-Embedding（默认本地降级：JSON 存储 + numpy 余弦） | 语义理解，"广告投放" 匹配 "推广策略" |
+| 🔑 关键词检索 | Elasticsearch 8.x + IK 分词（默认本地降级：jieba + TF-IDF） | 精确匹配，"千川" 匹配 "巨量千川" |
+| 🔄 融合去重 | RRF / 加权融合 + TF-IDF cosine 相似度去重 | 消除双模检索的重复结果 |
+| 📊 Reranker 精排 | Qwen3-Reranker via TEI（默认本地降级：Embedder 余弦代理） | 从 ~20 个候选中精选 Top-5 |
+| 💬 生成融合 | vLLM/OpenAI 兼容 Chat 接口（默认本地降级：抽取式摘录 + Citation） | 基于检索上下文生成带引用的回答 |
+| 🌐 服务化 | FastAPI 后端 + 轻量前端（`rag/web/`） | 文档上传/检索/问答一站式体验，详见 `rag/README.md` |
+
+**核心设计**：每个组件（向量库/关键词库/Embedding/Reranker/生成）都有"真实服务后端"与"本地降级后端"双实现，默认本地降级，**零外部依赖即可跑通全链路**；生产环境通过环境变量切换到 Milvus/ES/TEI/vLLM 真实后端（见 [rag/README.md](rag/README.md)）。
 
 ---
 
-### 💬 agent — 智能体
+### 💬 agent — 智能体框架
 
-基于 [Pi-Agent](https://github.com/zhipuai/Pi-Agent) 构建（🔲 待开发）：
+基于 **[hello-agents](https://github.com/jjyaoao/HelloAgents)** 构建——一个已引入并可独立运行/测试的生产级多智能体框架，`agent/` 目录即该框架的完整项目工程（`pyproject.toml` + `hello_agents/` 包源码）。
 
 | 能力 | 说明 |
 |------|------|
-| 🧠 核心循环 | 感知 → 决策 → 行动 → 观察 |
-| 🔧 工具调用 | RAG 检索工具注册与调度，Agent 按需调用知识库 |
-| 💬 多轮对话 | 对话历史记忆 + Query 重写（指代补全） |
-| 📝 记忆管理 | 短期记忆（对话历史）+ 长期记忆（用户画像） |
+| 🧠 多种 Agent 范式 | `SimpleAgent`（单轮）/ `ReActAgent`（感知→决策→行动→观察循环）/ `ReflectionAgent`（自我反思）/ `PlanSolveAgent`（先规划后执行） |
+| 🔧 工具调用系统 | `ToolRegistry` 工具注册与调度、统一响应协议 `ToolResponse`、熔断器（Circuit Breaker）、工具过滤器 |
+| 🧵 上下文工程 | 对话历史管理、Token 计数、自动截断/压缩（长对话防爆炸） |
+| 💾 会话持久化 | 会话状态保存/加载/列表，支持多轮对话跨进程恢复 |
+| 🧩 Skills 知识外化 | `SkillLoader` 动态加载技能包（ASR/TTS/VLM/文档处理等 17 个内置技能） |
+| 🔍 可观测性 | `TraceLogger` 记录完整调用链路，便于调试与审计 |
+| 🌐 多 LLM Provider | `HelloAgentsLLM` 自动检测 OpenAI 兼容 / Anthropic / Gemini 三种适配器 |
+
+> ⚠️ **当前状态**：框架本身已引入并可用（详见 [agent/README.md](agent/README.md)），自带 19 个测试文件已迁移至 `tests/test_agent/`；**与 `rag/` 服务的工具化集成尚未开发**（是 M4 里程碑的核心待办，见 [TODO.md](TODO.md) 「难点追踪」章节）。
 
 ---
 
@@ -407,30 +305,50 @@ Stage 2: DPO 偏好优化（reranker_dpo.py）
 ### 1️⃣ 安装依赖
 
 ```bash
+# 主项目依赖（process / model / rag）
 pip install -r requirements.txt
+
+# Agent 模块依赖（hello-agents 框架，独立管理）
+pip install -r agent/requirements.txt
 ```
+
+> 💡 无需 `pip install -e agent/`：`tests/conftest.py` 已将 `agent/` 目录注入 `sys.path`，
+> 直接 `import hello_agents` 即可（等价于开发模式安装但零配置）。若要在 `agent/` 目录外的
+> 自有脚本中使用 `hello_agents`，建议正式安装：`pip install -e agent/`。
 
 ### 2️⃣ 配置环境
 
 ```bash
 cp config/config.example.json config/config.json
 cp .env.example .env
-# 编辑 .env：填写 DEEPSEEK_API_KEY、服务地址等
+# 编辑 .env：填写 DEEPSEEK_API_KEY、LLM_MODEL_ID/LLM_API_KEY/LLM_BASE_URL（Agent 用）、各服务地址等
 # 编辑 config.json：确认模型配置
 ```
 
 > **配置优先级**：环境变量 > `.env` 文件 > `config/config.json` > 代码默认值
+> **配置分层说明**：见 [.env.example](.env.example) 内的分区注释（通用配置 / process 专属 / rag 专属 / agent 专属 / 开发与生产环境区分）
 
-### 3️⃣ 部署模型服务
+### 3️⃣ 部署模型服务（可选，无 GPU/未部署时 rag/ 自动降级为本地实现）
 
 ```bash
+# 方式一：一键启动脚本（推荐，含 Docker/GPU 环境检查 + 健康检查）
+bash scripts/start_tei.sh
+
+# 方式二：手动 Docker Compose
 cd model/inference
 docker compose -f docker-compose-tei.yml up -d
 
 # 验证服务
 curl http://localhost:8080/health   # Embedding 服务
 curl http://localhost:8081/health   # Reranker 服务
+
+# 停止服务
+bash scripts/start_tei.sh --down
 ```
+
+> **启动顺序**：TEI 是 RAG 服务的上游依赖，但 rag/ 设计了优雅降级——
+> TEI 不可用时自动降级为本地哈希嵌入 + 余弦代理精排，不影响服务启动。
+> TEI 就绪后 rag/ 会自动开始使用真实模型服务。
 
 ### 4️⃣ 处理 HTML 数据
 
@@ -459,7 +377,7 @@ python -m main --source-dir process/dataset/html_source --use-vllm
 ### 5️⃣ 模型微调（可选）
 
 ```bash
-# Step 1: 构造训练数据
+# Step 1: 构造训练数据（已接入 rag.retrieval 真实召回）
 PYTHONPATH=. python -m model.utils.build_dataset \
     --milvus-host 127.0.0.1 \
     --collection-name htmlrag_dev \
@@ -472,32 +390,64 @@ PYTHONPATH=. python -m model.trainer.reranker_ft
 PYTHONPATH=. python -m model.trainer.reranker_dpo
 ```
 
-### 6️⃣ 运行测试
+### 6️⃣ 下载评测数据集（可选，用于快速体验 RAG 效果）
 
 ```bash
-export PYTHONPATH=process
-python -m pytest tests/ -v
+# 预处理脚本自动从 HuggingFace 下载 Bitext 电商客服数据集并生成知识库块
+python tests/experiment/preprocess.py
+
+# 导入知识库到 RAG 系统
+python -c "
+import json
+from rag.indexing import indexer
+blocks = json.load(open('tests/experiment/kb_blocks.json', encoding='utf-8'))
+indexer.ingest_blocks(blocks, filename='bitext_customer_support.json')
+"
+
+# 一键端到端评测（自动预处理→导入→运行31条用例→输出报告）
+python tests/experiment/run_eval.py
 ```
 
----
+> 数据集详情见 [dataset/README.md](dataset/README.md)：Bitext Customer Support（26,872 条 QA 对，覆盖 ORDER/REFUND/PAYMENT/DELIVERY 等 11 个类别 27 个意图）。
 
-## 🛠️ 技术栈
+### 7️⃣ 启动 RAG 服务（检索 + 问答）
 
-| 组件 | 技术 | 用途 |
-|------|------|------|
-| 🌐 HTML 解析 | BeautifulSoup4 | HTML 清洗与解析 |
-| ✂️ 中文分词 | jieba | 关键词提取与领域词典 |
-| 🚀 模型推理 | TEI (Text Embeddings Inference) | Embedding + Reranker 推理服务 |
-| 📐 嵌入模型 | Qwen3-Embedding-4B | 文本向量化 |
-| 📊 精排模型 | Qwen3-Reranker-4B | 文档重排序 |
-| 🗄️ 向量数据库 | Milvus 2.x | 向量存储与 ANN 检索 |
-| 🔍 搜索引擎 | Elasticsearch 8.x + IK 分词 | 关键词全文检索 |
-| 🔧 RAG 框架 | [RAGFlow](https://github.com/infiniflow/ragflow) | RAG 检索增强生成 |
-| 🤖 Agent 框架 | [Pi-Agent](https://github.com/zhipuai/Pi-Agent) | 智能体问答 |
-| 🎓 训练框架 | sentence-transformers + 自研 DPO | Reranker 微调与偏好优化 |
-| 📊 实验追踪 | Weights & Biases (wandb) | 训练指标可视化 |
-| ⚙️ 环境管理 | python-dotenv | 环境变量加载 |
-| 🧪 测试框架 | pytest | 单元测试 |
+```bash
+# 一键启动脚本：自动检查 Python 环境/依赖/配置文件，再启动服务
+bash scripts/run_RAGserver.sh
+
+# 等价于（脚本内部会先构建索引，再启动服务）：
+#   bash scripts/build_index.sh      # 读取 process/ 输出的知识块 JSON，写入向量库+关键词库
+#   bash scripts/run_RAGserver.sh    # 启动 FastAPI 后端（含前端页面）
+
+# 打开浏览器访问 http://localhost:8090/ui/ 体验文档上传 + 问答 + 检索测试
+# Swagger 接口文档: http://localhost:8090/docs
+# Agent 友好接口文档: rag/docs/API_REFERENCE.md
+```
+
+> 生产环境切换到真实 Milvus/ES/TEI/vLLM 服务的方法见 [rag/README.md](rag/README.md#快速开始)。
+
+### 8️⃣ 启动 Agent 服务
+
+```bash
+# 一键启动脚本：自动检查 hello_agents 是否可导入、LLM_API_KEY 是否配置
+bash scripts/run_AGTserver.sh
+```
+
+> 当前 `agent/` 与 `rag/` 服务的工具化调用尚未接线（见「RAG 与 Agent 的职责划分」），
+> `run_AGTserver.sh` 目前用于启动/验证 hello-agents 框架自身（示例见 `agent/examples/`）。
+
+### 9️⃣ 运行测试
+
+```bash
+# 运行全部测试（process + rag + agent，统一入口，无需手动设置 PYTHONPATH）
+pytest tests/ -v
+
+# 或分模块运行
+pytest tests/test_process/ -v
+pytest tests/test_rag/ -v
+pytest tests/test_agent/ -v      # 部分用例需先在 .env 配置 LLM_API_KEY 才能完整通过
+```
 
 ---
 
@@ -505,12 +455,12 @@ python -m pytest tests/ -v
 
 | 模块 | 状态 | 进度 | 说明 |
 |------|------|------|------|
-| 📦 process/ | ✅ 完成 | 100% | 对标 HtmlRAG 论文，单元测试覆盖 |
+| 📦 process/ | ✅ 完成 | 100% | 对标 HtmlRAG 论文，单元测试覆盖（`tests/test_process/`） |
 | 🤖 model/ | ✅ 基础完成 | 80% | TEI 客户端 + SFT/DPO 训练代码（待实际部署验证） |
-| 🔍 rag/ | 🔲 待开发 | 0% | 基于 RAGFlow 集成 |
-| 💬 agent/ | 🔲 待开发 | 0% | 基于 Pi-Agent 集成 |
-| 🧪 tests/ | 🔄 持续完善 | 60% | process 已覆盖，rag/agent 待补 |
-| 📊 评测体系 | 🔲 待设计 | 10% | 已规划四层指标，待实现评测脚本 |
+| 🔍 rag/ | ✅ 完成 | 100% | 索引/检索/融合/精排/生成 + FastAPI 后端 + 前端 + 文档 + 测试全交付，已完成全组件代码审计与性能优化 |
+| 💬 agent/ | 🔄 框架就位 | 40% | hello-agents 生产级框架已引入 + 自带测试迁移完成；与 rag/ 的工具化集成待开发（M4 核心） |
+| 🧪 tests/ | ✅ 模块化完成 | 90% | 按模块拆分为 `test_process/`（10）+ `test_rag/`（13）+ `test_agent/`（19），统一 `conftest.py` 入口 |
+| 📊 评测体系 | ✅ 基础完成 | 50% | Bitext 电商客服数据集（26,872 条 QA / 11 类别 27 意图），本地降级后端召回率 **93.5%**（31 条评测用例），平均延迟 574ms；详见 [dataset/README.md](dataset/README.md) |
 
 详见 [TODO.md](TODO.md)。
 
@@ -518,4 +468,55 @@ python -m pytest tests/ -v
 
 ## 📄 License
 
-本项目仅供学习和研究使用。引用的开源项目（HtmlRAG、TEI、RAGFlow、Pi-Agent 等）请遵循各自许可证。
+本项目仅供学习和研究使用。引用的开源项目（HtmlRAG、TEI、FastAPI、hello-agents 等）请遵循各自许可证；`agent/` 目录下的 hello-agents 框架许可证为 CC-BY-NC-SA-4.0，详见 [agent/LICENSE](agent/LICENSE)。
+
+---
+
+## 🎬 Demo 展示
+
+<!-- [Optimized] 新增 Demo 展示区：服务运行界面与 API 调用示例 -->
+
+### 前端界面
+
+启动 `bash scripts/run_RAGserver.sh` 后访问 `http://localhost:8090/ui/`：
+
+- **文档上传**：支持拖拽上传 `.txt` / `.md` / `.html` / `.json` / `.pdf`，自动解析分块并写入索引
+- **问答交互**：输入问题即时获得带 Citation 引用的回答，底部展示引用来源与分数
+- **检索测试**：输入查询查看原始检索到的文档块与相关性分数，用于调试检索效果
+
+### API 调用示例
+
+```bash
+# 1. 健康检查
+curl http://localhost:8090/api/health
+
+# 2. 上传文档
+curl -X POST http://localhost:8090/api/documents/upload \
+  -F "file=@dataset/test_doc.txt"
+
+# 3. 检索问答上下文
+curl -X POST http://localhost:8090/api/retrieve \
+  -H "Content-Type: application/json" \
+  -d '{"query": "如何取消订单", "top_k": 5}'
+
+# 4. 端到端问答（含生成）
+curl -X POST http://localhost:8090/api/chat \
+  -H "Content-Type: application/json" \
+  -d '{"query": "退款政策是什么"}'
+
+# 5. 流式问答（SSE）
+curl -N http://localhost:8090/api/chat/stream \
+  -X POST -H "Content-Type: application/json" \
+  -d '{"query": "订单超时未送达怎么办"}'
+
+# 6. 知识库统计
+curl http://localhost:8090/api/documents
+```
+
+### Swagger UI
+
+完整的交互式 API 文档（含请求/响应 Schema、错误码、在线测试）：
+
+- **Swagger UI**：`http://localhost:8090/docs`
+- **Agent 友好文档**：`rag/docs/API_REFERENCE.md`（纯文本格式，适合自动化解析）
+- **OpenAPI JSON**：`rag/docs/openapi.json`（静态导出，离线可用）

@@ -39,6 +39,11 @@ where = ["."]
 include = ["hello_agents*"]
 exclude = ["tests*", "examples*", "docs*"]
 
+# 目录从 hello_agents/ 改名为 src/ 后，通过 package-dir 映射保持
+# Python import 名仍为 `hello_agents`，避免 69 处引用的批量修改
+[tool.setuptools.package-dir]
+hello_agents = "src"
+
 [tool.setuptools.package-data]
 hello_agents = ["py.typed"]
 
@@ -66,6 +71,10 @@ multi_line_output = 3
 line_length = 88
 
 [tool.pytest.ini_options]
+# 注意：在 CustomerServiceAgent 主项目中，agent/tests/ 已迁移至统一测试目录
+# tests/test_agent/（由项目根目录的 tests/conftest.py 负责将本目录加入
+# sys.path 以保证 `import hello_agents` 可用）。此处 testpaths 仅在
+# hello-agents 作为独立包单独发布/开发时生效（`cd agent && pytest`）。
 testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]

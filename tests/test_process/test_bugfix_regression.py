@@ -17,8 +17,8 @@ import pytest
 from utils import config as cfg
 from utils.config import PROCESS_ROOT, PROJECT_ROOT, DATA_DIR, USER_DICT_PATH
 from html_utils import clean_html, build_block_tree, expand_table_spans
-import text_process_utils as tpu
-from text_process_utils import (
+import text_process as tpu
+from text_process import (
     generate_block_documents,
     generate_block_documents_async,
     deduplicate_ranked_blocks_pal,

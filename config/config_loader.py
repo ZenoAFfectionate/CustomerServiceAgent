@@ -89,7 +89,6 @@ CONFIG["tei_rerank_url"] = _env_or_config("TEI_RERANK_URL", _RAW_CONFIG, "http:/
 
 DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "")
 DEEPSEEK_BASE_URL = os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
-BLACKHOLE_URL = os.environ.get("BLACKHOLE_URL", "")
 
 # ======================== 日志配置 ========================
 LOG_LEVEL = CONFIG.get("log_level", "INFO").upper()

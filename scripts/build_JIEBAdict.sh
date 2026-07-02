@@ -13,4 +13,4 @@ HTML_DIR="${1:-process/dataset/html_source}"
 
 cd "$PROJECT_ROOT"
 echo "▶ 从 $HTML_DIR 提取高频短语并生成词典..."
-python -m utils.jieba_util --html-dir "$HTML_DIR" --output process/dataset/user_dict.txt
+python3 -m utils.jieba_util --html-dir "$HTML_DIR" --output process/dataset/user_dict.txt  # [Optimized] python → python3

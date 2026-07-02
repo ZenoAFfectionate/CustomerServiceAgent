@@ -31,6 +31,7 @@ TEI (Text Embeddings Inference) 客户端。
 """
 import os
 import sys
+import threading  # [Optimized] 添加线程锁保护单例初始化，与项目中 embedder/registry/vector_store 的模式一致
 import requests
 from typing import List, Optional
 
@@ -201,12 +202,15 @@ class TEIClient:
 # ======================== 全局单例 ========================
 
 _client: Optional[TEIClient] = None
+_client_lock = threading.Lock()  # [Optimized] 双重检查锁保护并发首次调用，避免重复创建客户端
 
 
 def get_tei_client() -> TEIClient:
     """获取全局 TEI 客户端单例。"""
     global _client
     if _client is None:
-        _client = TEIClient()
-        logger.info(f"TEI 客户端初始化: embed={_client.embed_url}, rerank={_client.rerank_url}")
+        with _client_lock:
+            if _client is None:
+                _client = TEIClient()
+                logger.info(f"TEI 客户端初始化: embed={_client.embed_url}, rerank={_client.rerank_url}")
     return _client

@@ -48,3 +48,13 @@ wandb>=0.16.0
 
 # 进度条
 tqdm>=4.66.0
+
+# ======================== rag/ RAG 系统专属依赖 ========================
+# 文件上传（FastAPI UploadFile 依赖）
+python-multipart>=0.0.9
+
+# PDF 文档解析（rag/indexing/loader.py，可选：未安装时 .pdf 上传会报错，其他格式不受影响）
+pypdf>=4.0.0
+
+# 测试框架
+pytest>=7.4.0

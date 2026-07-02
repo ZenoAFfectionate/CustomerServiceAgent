@@ -53,7 +53,10 @@ model/
 ### 1. 部署 TEI 服务
 
 ```bash
-# 使用 Docker Compose 一键部署 Embedding + Reranker
+# 方式一：一键启动脚本（推荐，含环境检查 + 健康检查）
+bash scripts/start_tei.sh
+
+# 方式二：手动 Docker Compose
 cd model/inference
 docker compose -f docker-compose-tei.yml up -d
 

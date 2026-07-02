@@ -22,9 +22,9 @@ echo "=========================================="
 echo ""
 echo "▶ 运行清洗 + 分块..."
 if [ -n "$USE_VLLM" ]; then
-    python -m main --source-dir "$HTML_SOURCE" --use-vllm
+    python3 -m main --source-dir "$HTML_SOURCE" --use-vllm  # [Optimized] python → python3，兼容现代 macOS/Linux 无 python 别名的环境
 else
-    python -m main --source-dir "$HTML_SOURCE"
+    python3 -m main --source-dir "$HTML_SOURCE"  # [Optimized] python → python3
 fi
 
 echo ""

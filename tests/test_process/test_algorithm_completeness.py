@@ -34,7 +34,7 @@ from html_utils import (
     _count_str_words,
     _is_ui_noise,
 )
-from text_process_utils import (
+from text_process import (
     generate_block_documents,
     save_doc_meta_to_block_dir,
     deduplicate_ranked_blocks_pal,

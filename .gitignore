@@ -45,6 +45,23 @@ dataset/html_cleaned/
 dataset/html_blocks/
 dataset/rewriting_test_set.jsonl
 
+# 电商客服评测数据集原始文件与预处理产物（大文件，可由 preprocess.py 重新生成）
+dataset/raw/
+dataset/kb_blocks.json
+dataset/eval_cases.json
+dataset/eval_results.json
+
+# tests/experiment/ 评测实验产物（可由 run_eval.py 重新生成）
+tests/experiment/kb_blocks.json
+tests/experiment/eval_cases.json
+tests/experiment/eval_results.json
+
+# ========================
+# rag/ 本地降级存储（运行时生成的知识库数据，不入库）
+# ========================
+rag/data/
+tests/_rag_test_data/
+
 # ========================
 # 微调产物
 # ========================

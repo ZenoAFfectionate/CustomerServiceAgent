@@ -11,6 +11,7 @@
   "vllm_timeout": 60,
   "vllm_max_concurrent_requests": 32,
   "vllm_batch_size": 32,
+  "embed_api_url": "http://localhost:8010/v1/embeddings",
   "device": "cuda:0",
   "lang": "zh",
   "max_node_words_embed": 4096,
