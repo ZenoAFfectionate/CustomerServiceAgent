@@ -61,6 +61,7 @@ tests/experiment/eval_results.json
 # ========================
 rag/data/
 tests/_rag_test_data/
+tests/_rag_profile3/
 
 # ========================
 # 微调产物
