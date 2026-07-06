@@ -45,6 +45,9 @@ dataset/html_cleaned/
 dataset/html_blocks/
 dataset/rewriting_test_set.jsonl
 
+# 预处理流水线产物（大文件，可由脚本重新生成）
+process/data/
+
 # 电商客服评测数据集原始文件与预处理产物（大文件，可由 preprocess.py 重新生成）
 dataset/raw/
 dataset/kb_blocks.json
