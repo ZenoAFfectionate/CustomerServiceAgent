@@ -186,6 +186,10 @@ class ReActAgent(Agent):
                         {"error_type": "LLM_ERROR", "message": str(e)},
                         step=current_step
                     )
+                # 【修复 N21】break 路径此前不保存会话历史，用户输入丢失、
+                # 流程静默中断。改为保存用户输入与错误提示到历史，便于排查。
+                self.add_message(Message(input_text, "user"))
+                self.add_message(Message(f"（LLM 调用连续失败，流程中断: {e}）", "assistant"))
                 break
 
             # 获取响应消息
@@ -975,10 +979,15 @@ class ReActAgent(Agent):
                     break
 
                 # 解析工具调用（需要完整响应）
-                # 注意：流式输出后需要重新调用 LLM 获取 tool_calls
-                # 这里简化处理：使用非流式调用获取工具调用
+                # 【修复 N28】astream_invoke 仅返回文本增量、不含 tool_calls，
+                # 因此需要额外调用一次 invoke_with_tools 获取工具调用。但此前
+                # 直接在 async 生成器内同步调用 invoke_with_tools 会阻塞事件
+                # 循环。改为用 asyncio.to_thread 包装，使同步调用在线程池中
+                # 执行不阻塞事件循环。（根治方案需让流式适配器也返回
+                # tool_calls，属更大范围改造，此处先解决阻塞问题。）
                 try:
-                    response = self.llm.invoke_with_tools(
+                    response = await asyncio.to_thread(
+                        self.llm.invoke_with_tools,
                         messages=messages,
                         tools=tool_schemas,
                         tool_choice="auto",
@@ -1050,9 +1059,20 @@ class ReActAgent(Agent):
                         # 检查是否是 Finish 工具
                         if tool_name == "Finish":
                             try:
-                                args = json.loads(tool_calls[0].arguments)
+                                # 【修复 N29】此前固定取 tool_calls[0].arguments，
+                                # 当一轮并行返回多个工具调用且 Finish 非首个时
+                                # 会取到错误工具的 arguments。改为按 tool_name
+                                # 定位对应的 tool_call。
+                                finish_tc = next(
+                                    (tc for tc in tool_calls if tc.name == "Finish"),
+                                    None,
+                                )
+                                if finish_tc:
+                                    args = json.loads(finish_tc.arguments)
+                                else:
+                                    args = {}
                                 final_answer = args.get("answer", result_dict["content"])
-                            except:
+                            except Exception:
                                 final_answer = result_dict["content"]
 
                             yield StreamEvent.create(

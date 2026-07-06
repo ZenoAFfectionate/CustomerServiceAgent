@@ -25,9 +25,11 @@
 | 4 | `GET`  | `/api/documents` | 知识库文档列表 |
 | 5 | `GET`  | `/api/documents/{doc_id}` | 文档详情 |
 | 6 | `DELETE` | `/api/documents/{doc_id}` | 删除文档 |
-| 7 | `POST` | `/api/retrieve` | 检索问答上下文（不生成答案） |
-| 8 | `POST` | `/api/chat` | 检索增强问答（RAG QA） |
-| 9 | `POST` | `/api/chat/stream` | 检索增强问答（SSE 流式输出） |
+| 7 | `GET`  | `/api/documents/{doc_id}/history` | 文档版本历史 |
+| 8 | `POST` | `/api/retrieve` | 检索问答上下文（不生成答案） |
+| 9 | `POST` | `/api/chat` | 检索增强问答（RAG QA） |
+| 10 | `POST` | `/api/chat/stream` | 检索增强问答（SSE 流式输出） |
+| 11 | `GET`  | `/api/dashboard` | 运维监控看板（延迟分位数/后端使用分布/告警） |
 
 ---
 
@@ -347,6 +349,51 @@ curl -N -X POST http://localhost:8090/api/chat/stream \
 ```
 
 **JS EventSource 消费示例**（需自行用 fetch + ReadableStream 解析，因 POST body 不支持原生 `EventSource`）：见 `rag/web/index.html` 的 `/api/chat` 调用方式（当前前端默认使用非流式 `/api/chat`）。
+
+---
+
+## 10. `GET /api/documents/{doc_id}/history`
+
+**说明**：返回该文档每次（重新）导入的内容哈希、块数与时间（见 `rag/knowledge_base/versioning.py`），用于追溯知识库内容变更历史。
+
+**路径参数**：同 `doc_id`。
+
+**响应 200**：
+```json
+[
+  { "hash": "a1b2c3d4e5f6a7b8", "num_chunks": 8, "filename": "ad_limit_faq.txt", "created_at": "2026-07-02 10:12:33" }
+]
+```
+
+**curl 示例**：
+```bash
+curl -X GET http://localhost:8090/api/documents/a1b2c3d4e5f60718/history
+```
+
+---
+
+## 11. `GET /api/dashboard`
+
+**说明**：返回运维监控快照（请求量/延迟分位数/后端使用分布/错误率）与触发的阈值告警列表（见 `rag/observability/`），供简易运维监控使用。
+
+**响应 200**：
+```json
+{
+  "metrics": {
+    "request_count": 128, "error_count": 0, "error_rate": 0.0,
+    "retrieval": { "count": 128, "avg_ms": 45.2, "p50_ms": 38.0, "p95_ms": 92.0, "p99_ms": 130.0 },
+    "answer": { "count": 128, "avg_ms": 60.1, "p50_ms": 55.0, "p95_ms": 110.0, "backend_usage": { "local": 128 }, "fallback_rate": 1.0 }
+  },
+  "alerts": [],
+  "backends": { "vector_backend": "local", "keyword_backend": "local", "embed_backend": "local", "rerank_backend": "local" },
+  "corpus_stats": { "num_documents": 3, "num_vector_chunks": 42, "num_keyword_chunks": 42 }
+}
+```
+
+**curl 示例**：
+```bash
+curl -X GET http://localhost:8090/api/dashboard
+```
 
 ---
 

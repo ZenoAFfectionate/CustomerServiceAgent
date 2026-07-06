@@ -21,7 +21,10 @@ import sys
 import json
 import torch
 import torch.nn.functional as F
-import wandb
+try:
+    import wandb
+except ImportError:
+    wandb = None  # type: ignore
 from typing import List, Dict, Tuple
 from torch.utils.data import Dataset, DataLoader
 from transformers import AutoTokenizer, AutoModelForSequenceClassification, set_seed
@@ -52,6 +55,11 @@ GRADIENT_CLIP = 1.0
 
 # ======================== 环境初始化 ========================
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+# 【修复 M4】fp16 权重在 CPU 上做前向/反向传播（matmul 等算子）时多数 PyTorch
+# 版本不支持，会直接报错，导致 DPO 训练在无 GPU 环境下完全无法运行。仅在
+# CUDA 可用时使用 fp16（配合下方 USE_AMP 的自动混合精度），CPU 环境自动回退
+# 到 fp32，保证训练至少能跑通（速度慢但不崩溃）。
+MODEL_DTYPE = torch.float16 if device.type == "cuda" else torch.float32
 
 
 # ======================== 数据集 ========================
@@ -124,29 +132,47 @@ def compute_dpo_loss(
 ) -> torch.Tensor:
     """计算 DPO 损失。
 
-    L_DPO = -E[log σ(β · (Δπ_chosen - Δπ_rejected))]
+    L_DPO = -E[log σ(β · (Δlogπ_chosen - Δlogπ_rejected))]
 
-    其中 Δπ = policy_score - reference_score
+    其中 Δlogπ = log π_policy(y|x) - log π_reference(y|x)。
+
+    【修复 M4】此前直接对回归头的原始分数做差值（`policy_chosen_scores -
+    policy_rejected_scores`），并未归一化为 log-prob，与标准 DPO（基于
+    log 概率差）语义不同——β 缩放能吸收量级使其"可训练"，但数学上是
+    「score-difference」变体而非标准 DPO。
+
+    这里的 Reranker 是单标量回归头（`num_labels=1`），与 `reranker_ft.py`
+    用 `BCEWithLogitsLoss` 训练同一结构模型的语义一致：把该分数视为
+    "文档与 query 相关"这一二元事件的 logit，即 `P(相关) = sigmoid(score)`。
+    因此 `log π(y|x) ≈ F.logsigmoid(score)`，用它替代原始分数即可得到
+    数学上更贴近标准 DPO 公式的 log-prob 差值，而不再是原始分数差值。
 
     Args:
-        policy_chosen_scores: 策略模型对 chosen 的打分 [batch]
+        policy_chosen_scores: 策略模型对 chosen 的打分（回归头原始 logit）[batch]
         policy_rejected_scores: 策略模型对 rejected 的打分 [batch]
         reference_chosen_scores: 参考模型对 chosen 的打分 [batch]
         reference_rejected_scores: 参考模型对 rejected 的打分 [batch]
         beta: DPO 温度参数
 
     Returns:
-        DPO 损失值
+        (DPO 损失值, chosen 打分是否确实高于 rejected 的准确率)
     """
-    # 计算偏好差值
-    policy_log_ratio = policy_chosen_scores - policy_rejected_scores
-    reference_log_ratio = reference_chosen_scores - reference_rejected_scores
+    # 将回归头原始分数（logit）归一化为 log-prob：log π(y|x) ≈ log σ(score)
+    policy_log_pi_chosen = F.logsigmoid(policy_chosen_scores)
+    policy_log_pi_rejected = F.logsigmoid(policy_rejected_scores)
+    reference_log_pi_chosen = F.logsigmoid(reference_chosen_scores)
+    reference_log_pi_rejected = F.logsigmoid(reference_rejected_scores)
+
+    # 计算偏好差值（基于 log-prob，而非原始分数）
+    policy_log_ratio = policy_log_pi_chosen - policy_log_pi_rejected
+    reference_log_ratio = reference_log_pi_chosen - reference_log_pi_rejected
 
     # DPO 损失
     logits = beta * (policy_log_ratio - reference_log_ratio)
     loss = -F.logsigmoid(logits).mean()
 
-    # 计算准确率（chosen 是否确实得分更高）
+    # 计算准确率（chosen 是否确实得分更高；用原始分数比较，与 log-prob 变换
+    # 后的相对大小关系一致，因 sigmoid/logsigmoid 均为单调递增函数）
     with torch.no_grad():
         acc = (policy_chosen_scores > policy_rejected_scores).float().mean()
 
@@ -189,12 +215,12 @@ def main():
 
     logger.info(f"📦 加载策略模型: {MODEL_NAME}")
     policy_model = AutoModelForSequenceClassification.from_pretrained(
-        MODEL_NAME, num_labels=1, torch_dtype=torch.float16
+        MODEL_NAME, num_labels=1, torch_dtype=MODEL_DTYPE
     ).to(device)
 
     logger.info(f"📦 加载参考模型（冻结）: {MODEL_NAME}")
     reference_model = AutoModelForSequenceClassification.from_pretrained(
-        MODEL_NAME, num_labels=1, torch_dtype=torch.float16
+        MODEL_NAME, num_labels=1, torch_dtype=MODEL_DTYPE
     ).to(device)
     reference_model.eval()
     for param in reference_model.parameters():
@@ -212,10 +238,13 @@ def main():
     train_dataloader = DataLoader(train_data, shuffle=True, batch_size=BATCH_SIZE, collate_fn=dpo_collate_fn)
     val_dataloader = DataLoader(val_data, shuffle=False, batch_size=BATCH_SIZE, collate_fn=dpo_collate_fn)
 
-    wandb.init(project=PROJECT_NAME, name=RUN_NAME, config={
-        "model": MODEL_NAME, "beta": BETA, "lr": LEARNING_RATE,
-        "batch_size": BATCH_SIZE, "epochs": EPOCHS, "max_length": MAX_LENGTH,
-    })
+    if wandb is not None:
+        wandb.init(project=PROJECT_NAME, name=RUN_NAME, config={
+            "model": MODEL_NAME, "beta": BETA, "lr": LEARNING_RATE,
+            "batch_size": BATCH_SIZE, "epochs": EPOCHS, "max_length": MAX_LENGTH,
+        })
+    else:
+        logger.warning("⚠️ wandb 未安装，跳过实验追踪（pip install wandb 可启用）")
 
     best_acc = 0.0
     patience = 0
@@ -256,7 +285,7 @@ def main():
             total_acc += acc.item()
             progress_bar.set_postfix({"loss": f"{loss.item():.4f}", "acc": f"{acc.item():.3f}"})
 
-            if step % 10 == 0:
+            if step % 10 == 0 and wandb is not None:
                 wandb.log({"train_loss": loss.item(), "train_acc": acc.item(), "epoch": epoch})
 
         # 验证
@@ -264,11 +293,12 @@ def main():
         avg_train_loss = total_loss / len(train_dataloader)
         avg_train_acc = total_acc / len(train_dataloader)
 
-        wandb.log({
-            "val_loss": val_metrics["loss"], "val_acc": val_metrics["acc"],
-            "avg_train_loss": avg_train_loss, "avg_train_acc": avg_train_acc,
-            "epoch": epoch,
-        })
+        if wandb is not None:
+            wandb.log({
+                "val_loss": val_metrics["loss"], "val_acc": val_metrics["acc"],
+                "avg_train_loss": avg_train_loss, "avg_train_acc": avg_train_acc,
+                "epoch": epoch,
+            })
 
         logger.info(f"✅ Epoch {epoch+1}: train_loss={avg_train_loss:.4f}, train_acc={avg_train_acc:.3f}, "
                     f"val_loss={val_metrics['loss']:.4f}, val_acc={val_metrics['acc']:.3f}")

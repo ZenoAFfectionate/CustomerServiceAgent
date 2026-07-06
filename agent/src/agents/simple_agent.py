@@ -315,7 +315,10 @@ class SimpleAgent(Agent):
     def remove_tool(self, tool_name: str) -> bool:
         """移除工具（便利方法）"""
         if self.tool_registry:
-            return self.tool_registry.unregister_tool(tool_name)
+            # 【修复 N27】ToolRegistry 的方法名为 unregister（非 unregister_tool），
+            # 此前调用不存在的 unregister_tool 会抛 AttributeError。
+            self.tool_registry.unregister(tool_name)
+            return True
         return False
 
     def list_tools(self) -> list:

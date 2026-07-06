@@ -383,6 +383,55 @@
   .spinner.dark { border: 2px solid rgba(79,70,229,.25); border-top-color: var(--primary); }
   @keyframes spin { to { transform: rotate(360deg); } }
   .u-spinner-wrap { display: inline-flex; align-items: center; }
+
+  /* ---- 监控看板 ---- */
+  .dashboard-panel { flex: 1; overflow-y: auto; padding: 18px 24px 24px; min-height: 0; }
+  .dash-wrap { max-width: 900px; margin: 0 auto; }
+  .dash-section-title { font-size: 12.5px; font-weight: 600; color: var(--text-muted); margin: 18px 0 8px; text-transform: uppercase; letter-spacing: .04em; }
+  .dash-section-title:first-child { margin-top: 0; }
+  .metric-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
+  .metric-card {
+    background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-md);
+    padding: 12px 14px; box-shadow: var(--shadow-sm);
+  }
+  .metric-card .m-label { font-size: 11.5px; color: var(--text-muted); margin-bottom: 4px; }
+  .metric-card .m-value { font-size: 20px; font-weight: 700; color: var(--text); }
+  .metric-card .m-value.danger { color: var(--danger); }
+  .metric-card .m-value.warn { color: var(--warning); }
+  .metric-card .m-value.ok { color: var(--success); }
+  .metric-card .m-sub { font-size: 11px; color: var(--text-faint); margin-top: 2px; }
+  .latency-row {
+    display: flex; gap: 18px; background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--radius-md); padding: 12px 16px; box-shadow: var(--shadow-sm); flex-wrap: wrap;
+  }
+  .latency-row .l-item { display: flex; flex-direction: column; gap: 2px; min-width: 70px; }
+  .latency-row .l-item .l-label { font-size: 10.5px; color: var(--text-faint); }
+  .latency-row .l-item .l-value { font-size: 15px; font-weight: 600; color: var(--text); }
+  .backend-tags { display: flex; flex-wrap: wrap; gap: 6px; }
+  .backend-tag {
+    font-size: 11.5px; padding: 4px 10px; border-radius: 999px; background: var(--surface-alt);
+    border: 1px solid var(--border); color: var(--text-secondary);
+  }
+  .backend-tag b { color: var(--primary); }
+  .backend-tag.is-real { background: var(--success-soft); color: #047857; border-color: transparent; }
+  .alert-list { display: flex; flex-direction: column; gap: 6px; }
+  .alert-item {
+    display: flex; align-items: center; gap: 8px; padding: 9px 12px; border-radius: var(--radius-sm);
+    font-size: 12.5px; border: 1px solid var(--border);
+  }
+  .alert-item.warning { background: var(--warning-soft); border-color: #fde68a; color: #92400e; }
+  .alert-item.critical { background: var(--danger-soft); border-color: #fecaca; color: #991b1b; }
+  .alert-item .a-icon { flex-shrink: 0; }
+  .stage-bar-row { display: flex; align-items: center; gap: 8px; font-size: 12px; padding: 4px 0; }
+  .stage-bar-row .s-name { width: 70px; color: var(--text-secondary); flex-shrink: 0; }
+  .stage-bar-row .s-track { flex: 1; height: 8px; border-radius: 999px; background: var(--border); overflow: hidden; }
+  .stage-bar-row .s-fill { height: 100%; background: var(--danger); border-radius: 999px; }
+  .stage-bar-row .s-count { width: 30px; text-align: right; color: var(--text-faint); flex-shrink: 0; }
+  .history-section { margin-top: 10px; border-top: 1px solid var(--border); padding-top: 8px; }
+  .history-section .hs-title { font-size: 11.5px; color: var(--text-muted); margin-bottom: 6px; cursor: pointer; display: flex; align-items: center; gap: 4px; }
+  .history-version-item { display: flex; justify-content: space-between; gap: 8px; font-size: 11.5px; color: var(--text-secondary); padding: 3px 0; border-bottom: 1px dashed var(--border); }
+  .history-version-item:last-child { border-bottom: none; }
+  .history-version-item .hv-hash { font-family: "SF Mono", Menlo, Consolas, monospace; color: var(--text-faint); }
 </style>
 </head>
 <body>
@@ -468,6 +517,7 @@
       <div class="tabs">
         <div class="tab active" data-tab="chat">💬 问答</div>
         <div class="tab" data-tab="retrieve">🔍 检索测试</div>
+        <div class="tab" data-tab="dashboard">📊 监控看板</div>
       </div>
       <div class="toolbar-actions" id="chatActions">
         <span class="topk-chip" id="topkChipChat">Top-K 默认</span>
@@ -477,6 +527,10 @@
       <div class="toolbar-actions" id="retrieveActions" style="display:none;">
         <span class="topk-chip" id="topkChipRetrieve">Top-K 默认</span>
         <button class="ghost-btn" id="exportRetrieveBtn" disabled>⬇ 导出结果</button>
+      </div>
+      <div class="toolbar-actions" id="dashboardActions" style="display:none;">
+        <span class="topk-chip" id="dashboardUpdatedAt">-</span>
+        <button class="ghost-btn" id="refreshDashboardBtn">↻ 刷新</button>
       </div>
     </div>
 
@@ -519,6 +573,12 @@
           <span class="e-icon">🧭</span>
           输入查询以测试检索效果，可查看命中的知识库片段、来源与相关性评分
         </div>
+      </div>
+    </section>
+
+    <section class="dashboard-panel" id="dashboardPanel" style="display:none">
+      <div id="dashboardContent">
+        <div class="empty-hint"><span class="e-icon">📊</span>加载监控数据中...</div>
       </div>
     </section>
   </main>
@@ -723,12 +783,25 @@ async function showDocDetail(docId, anchorEl) {
   document.querySelectorAll(".confirm-bubble").forEach(b => b.remove());
   const bubble = document.createElement("div");
   bubble.className = "confirm-bubble";
-  bubble.style.width = "220px";
+  bubble.style.width = "260px";
   bubble.innerHTML = `<div class="u-spinner-wrap"><span class="spinner dark"></span>加载详情...</div>`;
   anchorEl.style.position = "relative";
   anchorEl.appendChild(bubble);
   try {
-    const doc = await fetchJSON(`${API_BASE}/documents/${docId}`);
+    // 详情 + 版本历史（rag/knowledge_base/versioning.py）并行请求，
+    // 让用户在文档详情面板内就能看到该文档历次（重新）导入的变更记录，
+    // 而不必额外调用接口/查看服务端 versions.json 文件。
+    const [doc, history] = await Promise.all([
+      fetchJSON(`${API_BASE}/documents/${docId}`),
+      fetchJSON(`${API_BASE}/documents/${docId}/history`).catch(() => []),
+    ]);
+    const historyHtml = history && history.length
+      ? history.slice().reverse().map((h, i) => `
+          <div class="history-version-item">
+            <span>${i === 0 ? "🟢 最新" : `v${history.length - i}`} · ${h.num_chunks} 块</span>
+            <span class="hv-hash" title="${escapeHtml(h.hash)}">${escapeHtml((h.hash || "").slice(0, 8))} · ${escapeHtml(h.created_at || "-")}</span>
+          </div>`).join("")
+      : `<div style="color:var(--text-faint);font-size:11.5px;">暂无版本记录</div>`;
     bubble.innerHTML = `
       <div style="font-weight:600;margin-bottom:6px;word-break:break-all;">${escapeHtml(doc.filename)}</div>
       <div style="color:var(--text-muted);line-height:1.7;">
@@ -736,6 +809,10 @@ async function showDocDetail(docId, anchorEl) {
         来源：${escapeHtml(doc.source || "-")}<br/>
         分块数：${doc.num_chunks}<br/>
         创建时间：${escapeHtml(doc.created_at || "-")}
+      </div>
+      <div class="history-section">
+        <div class="hs-title">🕘 版本历史（${history ? history.length : 0}）</div>
+        ${historyHtml}
       </div>
       <div class="btns"><button data-close style="flex:1">关闭</button></div>
     `;
@@ -856,12 +933,21 @@ document.getElementById("clearHistoryBtn").addEventListener("click", () => {
 renderHistory();
 
 /* ==================== Tab 切换（含移动端侧边栏） ==================== */
+let dashboardAutoTimer = null;
 function switchTab(name) {
   document.querySelectorAll(".tab").forEach(t => t.classList.toggle("active", t.dataset.tab === name));
   document.getElementById("chatPanel").style.display = name === "chat" ? "flex" : "none";
-  document.getElementById("retrievePanel").style.display = name === "chat" ? "none" : "block";
+  document.getElementById("retrievePanel").style.display = name === "retrieve" ? "block" : "none";
+  document.getElementById("dashboardPanel").style.display = name === "dashboard" ? "block" : "none";
   document.getElementById("chatActions").style.display = name === "chat" ? "flex" : "none";
-  document.getElementById("retrieveActions").style.display = name === "chat" ? "none" : "flex";
+  document.getElementById("retrieveActions").style.display = name === "retrieve" ? "flex" : "none";
+  document.getElementById("dashboardActions").style.display = name === "dashboard" ? "flex" : "none";
+
+  clearInterval(dashboardAutoTimer);
+  if (name === "dashboard") {
+    refreshDashboard();
+    dashboardAutoTimer = setInterval(refreshDashboard, 10000);
+  }
 }
 document.querySelectorAll(".tab").forEach(tab => tab.addEventListener("click", () => switchTab(tab.dataset.tab)));
 
@@ -1163,6 +1249,107 @@ document.getElementById("exportRetrieveBtn").addEventListener("click", () => {
   downloadText(`retrieve_export_${Date.now()}.md`, md);
   toast("已导出结果", "success");
 });
+
+/* ==================== 监控看板 ==================== */
+function backendLabel(key) {
+  const map = {
+    vector_backend: "向量库", keyword_backend: "关键词库", embed_backend: "Embedding",
+    rerank_backend: "Reranker", generation_backend: "生成",
+  };
+  return map[key] || key;
+}
+
+function renderDashboard(data) {
+  const m = data.metrics || {};
+  const retrieval = m.retrieval || {};
+  const answer = m.answer || {};
+  const errorRate = m.error_rate || 0;
+  const errorRateClass = errorRate > 0.05 ? "danger" : errorRate > 0 ? "warn" : "ok";
+  const stats = data.corpus_stats || {};
+
+  const backendKeys = ["vector_backend", "keyword_backend", "embed_backend", "rerank_backend", "generation_backend"];
+  const backendTagsHtml = backendKeys.filter(k => stats[k] !== undefined).map(k => {
+    const val = stats[k];
+    const isReal = val && val !== "local";
+    return `<span class="backend-tag ${isReal ? "is-real" : ""}">${backendLabel(k)}: <b>${escapeHtml(String(val))}</b></span>`;
+  }).join("");
+
+  const alerts = data.alerts || [];
+  const alertsHtml = alerts.length
+    ? `<div class="alert-list">${alerts.map(a => `
+        <div class="alert-item ${a.level === "critical" ? "critical" : "warning"}">
+          <span class="a-icon">${a.level === "critical" ? "🔴" : "🟡"}</span>
+          <span>${escapeHtml(a.message || "")}</span>
+        </div>`).join("")}</div>`
+    : `<div class="alert-item" style="border-color:transparent;background:var(--success-soft);color:#047857;"><span class="a-icon">✅</span><span>暂无告警，各项指标均在正常阈值内</span></div>`;
+
+  const stageEntries = Object.entries(m.errors_by_stage || {}).sort((a, b) => b[1] - a[1]);
+  const maxStageCount = Math.max(1, ...stageEntries.map(([, c]) => c), 1);
+  const stagesHtml = stageEntries.length
+    ? stageEntries.map(([stage, count]) => `
+        <div class="stage-bar-row">
+          <span class="s-name">${escapeHtml(stage)}</span>
+          <div class="s-track"><div class="s-fill" style="width:${(count / maxStageCount * 100).toFixed(0)}%;"></div></div>
+          <span class="s-count">${count}</span>
+        </div>`).join("")
+    : `<div style="color:var(--text-faint);font-size:11.5px;padding:4px 0;">暂无异常记录 🎉</div>`;
+
+  const backendUsageEntries = Object.entries(answer.backend_usage || {});
+  const backendUsageHtml = backendUsageEntries.length
+    ? backendUsageEntries.map(([b, c]) => `<span class="backend-tag">${escapeHtml(b)}: <b>${c}</b></span>`).join("")
+    : `<span style="color:var(--text-faint);font-size:12px;">暂无数据</span>`;
+
+  document.getElementById("dashboardContent").innerHTML = `
+    <div class="dash-wrap">
+      <div class="dash-section-title">📈 请求概览</div>
+      <div class="metric-grid">
+        <div class="metric-card"><div class="m-label">总请求数</div><div class="m-value">${m.request_count ?? 0}</div></div>
+        <div class="metric-card"><div class="m-label">错误数</div><div class="m-value ${errorRateClass}">${m.error_count ?? 0}</div></div>
+        <div class="metric-card"><div class="m-label">错误率</div><div class="m-value ${errorRateClass}">${(errorRate * 100).toFixed(1)}%</div></div>
+        <div class="metric-card"><div class="m-label">知识库文档数</div><div class="m-value">${stats.num_documents ?? "-"}</div></div>
+        <div class="metric-card"><div class="m-label">向量块数</div><div class="m-value">${stats.num_vector_chunks ?? "-"}</div></div>
+      </div>
+
+      <div class="dash-section-title">⏱ 检索延迟（毫秒）</div>
+      <div class="latency-row">
+        <div class="l-item"><span class="l-label">样本数</span><span class="l-value">${retrieval.count ?? 0}</span></div>
+        <div class="l-item"><span class="l-label">平均</span><span class="l-value">${(retrieval.avg_ms ?? 0).toFixed(0)}</span></div>
+        <div class="l-item"><span class="l-label">P50</span><span class="l-value">${(retrieval.p50_ms ?? 0).toFixed(0)}</span></div>
+        <div class="l-item"><span class="l-label">P95</span><span class="l-value">${(retrieval.p95_ms ?? 0).toFixed(0)}</span></div>
+        <div class="l-item"><span class="l-label">P99</span><span class="l-value">${(retrieval.p99_ms ?? 0).toFixed(0)}</span></div>
+      </div>
+
+      <div class="dash-section-title">⏱ 问答延迟（毫秒）与生成后端使用分布</div>
+      <div class="latency-row" style="margin-bottom:10px;">
+        <div class="l-item"><span class="l-label">样本数</span><span class="l-value">${answer.count ?? 0}</span></div>
+        <div class="l-item"><span class="l-label">平均</span><span class="l-value">${(answer.avg_ms ?? 0).toFixed(0)}</span></div>
+        <div class="l-item"><span class="l-label">P50</span><span class="l-value">${(answer.p50_ms ?? 0).toFixed(0)}</span></div>
+        <div class="l-item"><span class="l-label">P95</span><span class="l-value">${(answer.p95_ms ?? 0).toFixed(0)}</span></div>
+        <div class="l-item"><span class="l-label">降级率</span><span class="l-value">${((answer.fallback_rate ?? 0) * 100).toFixed(0)}%</span></div>
+      </div>
+      <div class="backend-tags">${backendUsageHtml}</div>
+
+      <div class="dash-section-title">🚨 阈值告警</div>
+      ${alertsHtml}
+
+      <div class="dash-section-title">🧩 各阶段异常次数（vector / keyword / fusion / rerank / generation）</div>
+      ${stagesHtml}
+
+      <div class="dash-section-title">⚙️ 当前生效后端</div>
+      <div class="backend-tags">${backendTagsHtml}</div>
+    </div>`;
+}
+
+async function refreshDashboard() {
+  try {
+    const data = await fetchJSON(`${API_BASE}/dashboard`);
+    renderDashboard(data);
+    document.getElementById("dashboardUpdatedAt").textContent = `更新于 ${new Date().toLocaleTimeString()}`;
+  } catch (e) {
+    document.getElementById("dashboardContent").innerHTML = `<div class="empty-hint"><span class="e-icon">⚠️</span>加载监控数据失败：${escapeHtml(e.message)}</div>`;
+  }
+}
+document.getElementById("refreshDashboardBtn").addEventListener("click", refreshDashboard);
 
 /* ==================== 初始化 ==================== */
 refreshStatus();

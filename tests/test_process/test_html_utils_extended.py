@@ -146,10 +146,11 @@ class TestBuildBlockTreeDeepNested:
         assert blocks == []
 
     def test_html_below_min_words(self):
-        """内容不足 min_node_words 时返回空列表。"""
+        """回归测试：修复 M7——内容不足 min_node_words 但非空时应保留为单块，
+        而非直接丢弃（避免短帮助页/零散小段落被静默丢弃）。"""
         html = "<p>短</p>"
         blocks, raw = build_block_tree(html, max_node_words=512, min_node_words=32, zh_char=True)
-        assert blocks == []
+        assert len(blocks) == 1
 
     def test_multiple_top_level_children(self):
         """多个顶层子标签都满足 min_words 时应全部保留。"""

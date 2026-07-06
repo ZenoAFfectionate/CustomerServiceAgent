@@ -23,21 +23,11 @@ except ImportError:
 
 
 # ======================== 辅助函数 ========================
-def _env_or_config(key: str, config: dict, default=None, cast=str):
-    """从环境变量或 config 字典中读取值，环境变量优先。"""
-    env_val = os.environ.get(key)
-    if env_val is not None and env_val != "":
-        try:
-            return cast(env_val)
-        except (ValueError, TypeError):
-            return env_val
-    val = config.get(key, default)
-    if val is not None and cast != str:
-        try:
-            return cast(val)
-        except (ValueError, TypeError):
-            pass
-    return val
+# 【修复 L3】此前在本文件、`rag/config.py`、`process/utils/config.py` 三处
+# 各自定义了一份几乎完全相同的 `_env_or_config` 实现，改一处逻辑容易漏改
+# 另外两处。现统一从 `config/env_utils.py` 导入唯一实现（用 as 保留原有
+# 局部名 `_env_or_config`，本文件其余调用点无需改动）。
+from .env_utils import env_or_config as _env_or_config
 
 
 # ======================== 加载 config.json ========================
@@ -76,10 +66,18 @@ for env_name in ("dev", "prod"):
     if env_name in _env_config:
         _env_cfg = _env_config[env_name]
         prefix = env_name.upper()
-        _env_cfg["milvus_host"] = _env_or_config(f"MILVUS_HOST_{prefix}", {"v": _env_cfg.get("milvus_host")}, _env_cfg.get("milvus_host", "127.0.0.1"))
-        _env_cfg["es_host"] = _env_or_config(f"ES_HOST_{prefix}", {"v": _env_cfg.get("es_host")}, _env_cfg.get("es_host", "127.0.0.1"))
-        _env_cfg["collection_name"] = _env_or_config(f"MILVUS_COLLECTION_{prefix}", {"v": _env_cfg.get("collection_name")}, _env_cfg.get("collection_name", f"htmlrag_{env_name}"))
-        _env_cfg["index_name"] = _env_or_config(f"ES_INDEX_{prefix}", {"v": _env_cfg.get("index_name")}, _env_cfg.get("index_name", f"htmlrag_{env_name}"))
+        # 【修复 L2】此前第二参数为 `{"v": _env_cfg.get(...)}`——但
+        # `_env_or_config` 用 `config.get(key, default)` 以 `MILVUS_HOST_DEV`
+        # 这类带前缀的 key 去查，而该临时 dict 的 key 永远是字面量 "v"，
+        # 永远查不到，是无效的死代码包裹（真正生效的始终是第三参数
+        # default）。现改为传入 `_RAW_CONFIG`：使其真正生效——允许直接在
+        # `config/config.json` 顶层写 `"MILVUS_HOST_DEV": "..."` 覆盖，
+        # 与其余 `_env_or_config` 调用（如上方 EMBED_MODEL）的用法保持一致，
+        # 而不再是恒定回退到第三参数默认值的死代码。
+        _env_cfg["milvus_host"] = _env_or_config(f"MILVUS_HOST_{prefix}", _RAW_CONFIG, _env_cfg.get("milvus_host", "127.0.0.1"))
+        _env_cfg["es_host"] = _env_or_config(f"ES_HOST_{prefix}", _RAW_CONFIG, _env_cfg.get("es_host", "127.0.0.1"))
+        _env_cfg["collection_name"] = _env_or_config(f"MILVUS_COLLECTION_{prefix}", _RAW_CONFIG, _env_cfg.get("collection_name", f"htmlrag_{env_name}"))
+        _env_cfg["index_name"] = _env_or_config(f"ES_INDEX_{prefix}", _RAW_CONFIG, _env_cfg.get("index_name", f"htmlrag_{env_name}"))
 
 CONFIG["_project_root"] = PROJECT_ROOT
 

@@ -12,10 +12,35 @@
 from typing import Dict, Any, List, Optional, Tuple
 from dataclasses import dataclass, field
 from datetime import datetime
+import logging
 import tiktoken
 import math
 
 from ..core.message import Message
+
+logger = logging.getLogger(__name__)
+
+
+def _tokenize_for_relevance(text: str) -> set:
+    """将文本切分为词元集合，用于计算 `_select` 中的关键词重叠相关性分数。
+
+    【修复 L5】原实现统一用 `text.lower().split()` 按空白分词——中文整句
+    没有空白分隔，会被当成一个 token，导致 `query_tokens`/`content_tokens`
+    近似恒为单元素集合，相关性分（重叠词数/总词数）近似恒为 0 或 1，
+    `min_relevance` 过滤器对中文场景基本失效。这里检测到中文字符时改用
+    jieba 分词；未安装 jieba（`agent/` 作为独立框架发布时不强制依赖 jieba）
+    时降级为原有的空白分词，不引入硬性依赖。
+    """
+    text = (text or "").lower()
+    if any("\u4e00" <= ch <= "\u9fff" for ch in text):
+        try:
+            import jieba
+            tokens = {t.strip() for t in jieba.lcut(text) if t.strip()}
+            if tokens:
+                return tokens
+        except ImportError:
+            pass
+    return set(text.split())
 
 
 @dataclass
@@ -160,10 +185,12 @@ class ContextBuilder:
         user_query: str
     ) -> List[ContextPacket]:
         """Select: 基于分数与预算的筛选"""
-        # 1) 计算相关性（关键词重叠）
-        query_tokens = set(user_query.lower().split())
+        # 1) 计算相关性（关键词重叠）。【修复 L5】改用 _tokenize_for_relevance
+        # （中文走 jieba 分词），而非直接 .split()（中文整句因无空白分隔会
+        # 被当成一个 token，相关性分近似恒为 0/1）。
+        query_tokens = _tokenize_for_relevance(user_query)
         for packet in packets:
-            content_tokens = set(packet.content.lower().split())
+            content_tokens = _tokenize_for_relevance(packet.content)
             if len(query_tokens) > 0:
                 overlap = len(query_tokens & content_tokens)
                 packet.relevance_score = overlap / len(query_tokens)
@@ -189,6 +216,13 @@ class ContextBuilder:
                      if p.metadata.get("type") != "instructions"]
         
         # 5) 依据 min_relevance 过滤（对非系统包）
+        # 【修复 N10】history/task_state/evidence 等辅助材料不应按关键词相关性
+        # 过滤——换话题时 query 与历史无词元重叠（overlap=0），历史被整体丢弃，
+        # 多轮指代补全所需上下文丢失。改为对这类包给保底 relevance_score。
+        for p in remaining:
+            p_type = p.metadata.get("type", "")
+            if p_type in ("history", "task_state", "evidence") and p.relevance_score < self.config.min_relevance:
+                p.relevance_score = self.config.min_relevance  # 保底通过过滤
         filtered = [p for p in remaining if p.relevance_score >= self.config.min_relevance]
         
         # 6) 按预算填充
@@ -279,7 +313,10 @@ class ContextBuilder:
         
         # 简单截断策略（保留前N个token）
         # 实际应用中可用LLM做高保真摘要
-        print(f"⚠️ 上下文超预算 ({current_tokens} > {available_tokens})，执行截断")
+        # 【修复 L5】用 logging 替代 print——print 无法被调用方接入的日志系统
+        # 统一采集/过滤级别/重定向到文件，且在生产环境静默 stdout 场景下会
+        # 直接丢失该告警。
+        logger.warning(f"⚠️ 上下文超预算 ({current_tokens} > {available_tokens})，执行截断")
         
         # 按段落截断，保留结构
         lines = context.split("\n")

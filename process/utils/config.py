@@ -30,6 +30,13 @@ PROCESS_ROOT = os.path.dirname(current_file_dir)   # process/
 PROJECT_ROOT = os.path.dirname(PROCESS_ROOT)       # CustomerServiceAgent/
 ENV_PATH = os.path.join(PROJECT_ROOT, ".env")
 
+# 确保项目根目录在 sys.path 上，以便下方 `from config.env_utils import ...`
+# 在 process/ 作为独立入口运行（未必总是先加载 conftest.py/rag/ 等已隐式插入
+# 项目根目录的模块）时也能正确解析 `config` 包。
+import sys  # noqa: E402
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+
 # ======================== 加载 .env ========================
 try:
     from dotenv import load_dotenv
@@ -39,21 +46,10 @@ except ImportError:
 
 
 # ======================== 辅助函数 ========================
-def _env_or_config(key: str, config: dict, default=None, cast=str):
-    """从环境变量或 config 字典中读取值，环境变量优先。"""
-    env_val = os.environ.get(key)
-    if env_val is not None and env_val != "":
-        try:
-            return cast(env_val)
-        except (ValueError, TypeError):
-            return env_val
-    val = config.get(key, default)
-    if val is not None and cast != str:
-        try:
-            return cast(val)
-        except (ValueError, TypeError):
-            pass
-    return val
+# 【修复 L3】此前在本文件、`config/config_loader.py`、`rag/config.py` 三处
+# 各自定义了一份几乎完全相同的 `_env_or_config` 实现，统一改为从
+# `config/env_utils.py` 导入唯一实现。
+from config.env_utils import env_or_config as _env_or_config  # noqa: E402
 
 
 # ======================== 加载 config.json ========================

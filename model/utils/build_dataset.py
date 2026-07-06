@@ -5,8 +5,13 @@ Reranker 训练数据集构建模块（改进版）。
 生成三种格式的训练数据，支持多种微调策略：
 
 1. **Pointwise** (reranker_qa_pointwise.jsonl)
-   - 格式: {"query": "...", "doc": "...", "label": 0/1}
-   - 用途: CrossEncoder 二分类微调（当前方案）
+   - 格式: {"query": "...", "doc": "...", "label": 0/1/2}（多级相关性标注：
+     0=无关，1=部分相关，2=高度相关；见下方 `build_relevance_annotation_prompt`。
+     【修复审查报告 M5】此前本行误写为 "0/1"，与 `reranker_ft.py` 的
+     docstring（`label: 0/1/2`）及本文件 21 行"多级相关性标注（0/1/2）"、
+     `parse_relevance_annotation` 的实际取值范围矛盾，属文档表述错误。）
+   - 用途: CrossEncoder 多级相关性微调，训练时按 `label/2.0` 归一化到 [0,1]
+     （见 `reranker_ft.py`）
 
 2. **Pairwise** (reranker_qa_pairwise.jsonl)
    - 格式: {"query": "...", "positive": "...", "negative": "..."}
@@ -38,7 +43,6 @@ from pathlib import Path
 
 import torch
 from pymilvus import connections, Collection
-from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_openai import ChatOpenAI
 
 warnings.filterwarnings("ignore", category=UserWarning, module="sklearn")
@@ -241,23 +245,40 @@ def process_one_sample_v2(
     relevance_scores = parse_relevance_annotation(rel_response, len(chunks))
 
     if relevance_scores is None:
-        # 回退到二分类标注
-        relevance_scores = [1 if i == positive_idx else 0 for i in range(len(chunks))]
-        logger.debug("⚠️ 相关性标注解析失败，使用二分类回退")
+        # 【修复 M5】回退到二分类标注时此前用 0/1（positive_idx→1，其余→0），
+        # 与正常路径的 0/1/2 三级标注语义不一致：`reranker_ft.py` 按
+        # `label/MAX_LABEL(=2.0)` 归一化，若数据集中混入这类 0/1 回退样本，
+        # 归一化后目标值仅有 0.0/0.5，模型从未见到「完全相关（1.0）」的
+        # 目标，削弱排序区分度。现改为 positive_idx→2（与"高度相关"档位
+        # 语义对齐），其余→0，保留三级标注的完整语义空间。
+        relevance_scores = [2 if i == positive_idx else 0 for i in range(len(chunks))]
+        logger.debug("⚠️ 相关性标注解析失败，使用二分类回退（0/2 两档，保留 0/1/2 标签空间的语义对齐）")
 
     positive_doc = format_chunk_for_reranker(chunks[positive_idx])
 
     # Step 3: 采样困难负样本（同页面不同段落）
     positive_page = chunks[positive_idx].get("page_name", "")
+    # 【修复 N2】此前用 `chunk is not chunks[positive_idx]`（对象身份比较）和
+    # `c not in chunks`（dict == 比较，但 chunks 来自检索结果含 15 键、
+    # all_chunks_pool 来自全量拉取仅 6 键，键集不同导致 == 恒不等）排除正文档，
+    # 二者均恒失效，正文档会泄漏进负样本池污染训练标签。改为以
+    # global_chunk_idx 为统一去重键。
+    seen_ids = {c.get("global_chunk_idx") for c in chunks}
     hard_negatives = []
     for chunk in all_chunks_pool:
-        if chunk.get("page_name") == positive_page and chunk is not chunks[positive_idx]:
+        if chunk.get("global_chunk_idx") in seen_ids:
+            continue
+        if chunk.get("page_name") == positive_page:
             hard_negatives.append(chunk)
         if len(hard_negatives) >= num_hard_negatives:
             break
 
-    # 随机负样本（基于实际候选池计算采样数，避免 random.sample 越界）
-    candidate_pool = [c for c in all_chunks_pool if c not in chunks and c not in hard_negatives]
+    hard_neg_ids = {c.get("global_chunk_idx") for c in hard_negatives}
+    candidate_pool = [
+        c for c in all_chunks_pool
+        if c.get("global_chunk_idx") not in seen_ids
+        and c.get("global_chunk_idx") not in hard_neg_ids
+    ]
     random_negatives = random.sample(
         candidate_pool, min(num_random_negatives, len(candidate_pool))
     )
@@ -291,7 +312,10 @@ def process_one_sample_v2(
         # Pointwise: 每个 (query, doc) 对带 0/1/2 标签
         for i, chunk in enumerate(chunks):
             doc = format_chunk_for_reranker(chunk)
-            label = relevance_scores[i] if relevance_scores else (1 if i == positive_idx else 0)
+            # relevance_scores 此处必然已被上方逻辑赋值（正常标注或回退标注），
+            # 这里的 else 分支仅作防御性兜底；同步为 2/0（而非 1/0）以保持与
+            # 上方回退逻辑一致的 0/1/2 标签语义（M5）。
+            label = relevance_scores[i] if relevance_scores else (2 if i == positive_idx else 0)
             f_pointwise.write(json.dumps({
                 "query": query, "doc": doc, "label": label
             }, ensure_ascii=False) + "\n")
@@ -309,6 +333,39 @@ def process_one_sample_v2(
             }, ensure_ascii=False) + "\n")
 
     return True
+
+
+def _query_all_blocks(collection: "Collection", output_fields: List[str], page_size: int = 10000) -> List[Dict]:
+    """分页拉取 Milvus collection 的全部记录（审查报告 L4 修复）。
+
+    此前的调用方式 `collection.query(expr="", ..., limit=10000)` 存在两个问题：
+    1. `expr=""`（空表达式）在部分 Milvus/pymilvus 版本会被判定为非法表达式
+       而直接抛异常（且未包裹在 try 中，会直接终止脚本）；
+    2. `limit=10000` 硬编码，集合超过 1 万条时会静默截断，采样池/负采样池
+       实际远小于真实语料规模而不易察觉。
+
+    改用合法的非空表达式 `global_chunk_idx >= 0`（该字段为非负自增主键，
+    等价于"匹配全部记录"但语义合法、不依赖空表达式的未定义行为），并按
+    `offset`/`limit` 分页拉取直到覆盖 `collection.num_entities`，避免大集合
+    下的静默截断。
+    """
+    total = collection.num_entities
+    if total <= 0:
+        return []
+    results: List[Dict] = []
+    offset = 0
+    while offset < total:
+        batch = collection.query(
+            expr="global_chunk_idx >= 0",
+            output_fields=output_fields,
+            limit=min(page_size, total - offset),
+            offset=offset,
+        )
+        if not batch:
+            break
+        results.extend(batch)
+        offset += len(batch)
+    return results
 
 
 if __name__ == "__main__":
@@ -339,35 +396,35 @@ if __name__ == "__main__":
     os.environ.setdefault("MILVUS_HOST_DEV", args.milvus_host)
     os.environ.setdefault("MILVUS_COLLECTION_DEV", args.collection_name)
 
-    from rag.retrieval import milvus_search as rag_milvus_search
-    from rag.retrieval import es_search as rag_es_search
-    from rag.retrieval.fusion import fuse as rag_fuse
+    from rag.retrieval import hybrid_search as rag_hybrid_search
 
-    logger.info("📦 加载 Embedder 模型...")
-    embedder = HuggingFaceEmbeddings(model_name=args.embed_model, model_kwargs={"device": device})
+    # 【修复 N11】此前在此加载 ~4B 参数的 HuggingFaceEmbeddings 后全文从未引用
+    # （向量检索由 rag_hybrid_search 自带 embedder 完成），白白占用显存/拖慢
+    # 启动甚至可能 OOM。已移除。
+    # 【修复 N12】此前 _query_all_blocks 的 output_fields 不含 question，随后对
+    # 每条抽样再发一次 Milvus query 取 question（N 次额外网络往返）。改为在
+    # _query_all_blocks 一次性拉取 question 字段，用字典 O(1) 查找。
 
     # 连接 Milvus
     connections.connect(alias="default", host=args.milvus_host, port="19530")
     collection = Collection(name=args.collection_name)
-    all_ids = collection.query(expr="", output_fields=["global_chunk_idx"], limit=10000)
-    valid_ids = [item["global_chunk_idx"] for item in all_ids]
+    all_chunks = _query_all_blocks(
+        collection,
+        ["global_chunk_idx", "text", "page_name", "title", "page_url", "summary", "question"],
+    )
+    # 构建 idx→chunk 字典，供后续 O(1) 查找 question（替代逐条 Milvus query）
+    chunk_by_idx = {item["global_chunk_idx"]: item for item in all_chunks}
+    valid_ids = [item["global_chunk_idx"] for item in all_chunks if item.get("question")]
     sample_ids = random.sample(valid_ids, min(args.sample_size, len(valid_ids)))
-
-    # 加载全部文档块池（用于负采样）
-    all_chunks = collection.query(expr="", output_fields=["text", "page_name", "title", "page_url", "summary"], limit=10000)
     logger.info(f"📚 文档块池大小: {len(all_chunks)}")
 
     success_count = 0
     for idx in sample_ids:
-        # 查询主键对应的 question
-        res = collection.query(
-            expr=f"global_chunk_idx == {idx}",
-            output_fields=["question", "text", "page_name", "title", "page_url", "summary"]
-        )
-        if not res or not res[0].get("question"):
+        res = chunk_by_idx.get(idx)
+        if not res or not res.get("question"):
             continue
 
-        question = res[0]["question"]
+        question = res["question"]
         logger.info(f"🔍 处理样本 {idx}: {question[:50]}")
 
         # 接入 rag/ 真实双模检索（对齐 TODO.md T6：回填依赖）：
@@ -375,13 +432,13 @@ if __name__ == "__main__":
         # 检索到的 rag.schema.DocBlock 字段与本文件的 chunk dict 字段（text/page_name/
         # title/page_url/summary）兼容，可直接传入 format_chunk_for_reranker。
         try:
-            milvus_results = rag_milvus_search.search(question, top_k=args.top_k)
-            es_results = rag_es_search.search(question, top_k=args.top_k)
-            fused_blocks = rag_fuse([milvus_results, es_results])
-            chunks = [b.to_dict(with_embedding=False) for b in fused_blocks] or [res[0]]
+            milvus_results = rag_hybrid_search.vector_search(question, top_k=args.top_k)
+            es_results = rag_hybrid_search.keyword_search(question, top_k=args.top_k)
+            fused_blocks = rag_hybrid_search.fuse([milvus_results, es_results])
+            chunks = [b.to_dict(with_embedding=False) for b in fused_blocks] or [res]
         except Exception as e:
             logger.warning(f"⚠️ rag/ 检索失败（{e}），回退为当前文档单条占位")
-            chunks = [res[0]]
+            chunks = [res]
 
         if process_one_sample_v2(chunks, all_chunks, args.output_dir,
                                   args.num_hard_negatives, args.num_random_negatives):

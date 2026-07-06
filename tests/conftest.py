@@ -8,7 +8,11 @@ pytest 共享配置与 fixtures（项目级统一测试入口）。
 tests/
 ├── conftest.py            # 本文件：全局 sys.path 注入 + 共享 fixtures
 ├── test_process/          # process/ 模块测试（HTML 清洗、分块、去重等）
-├── test_rag/              # rag/ 模块测试（索引、检索、融合、精排、生成、API）
+├── test_rag/              # rag/ 模块测试：按 rag/ 的 7 个子模块（retrieval/indexing/
+│                          #   knowledge_base/generation/evaluation/observability/
+│                          #   integration）分别组织，文件名前缀标注所属子模块，
+│                          #   并包含 test_pipeline.py/test_api.py/
+│                          #   test_cross_module_combinations.py 等跨模块组合测试
 └── test_agent/            # agent/ 模块测试（hello_agents 框架自带测试套件）
 ```
 
@@ -79,14 +83,17 @@ def clean_rag_data():
         shutil.rmtree(data_dir)
     os.makedirs(data_dir, exist_ok=True)
 
-    import rag.indexing.registry as registry_mod
-    import rag.indexing.embedder as embedder_mod
-    from rag.indexing.vector_store import reset_vector_store
-    from rag.indexing.keyword_store import reset_keyword_store
-    registry_mod._default_registry = None
-    embedder_mod._default_embedder = None
+    import rag.indexing.metadata as metadata_mod
+    import rag.indexing.embedding as embedding_mod
+    from rag.indexing.store import reset_keyword_store, reset_vector_store
+    from rag.observability import monitoring
+    from rag.knowledge_base.versioning import reset_version_store
+    metadata_mod._default_registry = None
+    embedding_mod._default_embedder = None
     reset_vector_store()
     reset_keyword_store()
+    reset_version_store()
+    monitoring.reset()
 
     yield
 

@@ -20,6 +20,9 @@ class BaseLLMAdapter(ABC):
         self.model = model
         self._client = None
         self._async_client = None
+        # 【修复 N17】非流式 invoke 路径此前不写 last_stats，调用方拿到的
+        # 统计是上一次流式残留或 None。初始化为 None 并在各子类 invoke 中赋值。
+        self.last_stats = None
 
     @abstractmethod
     def create_client(self) -> Any:
@@ -46,7 +49,10 @@ class BaseLLMAdapter(ABC):
         默认实现：使用队列 + 线程池包装同步流式方法
         """
         queue = asyncio.Queue()
-        loop = asyncio.get_event_loop()
+        # 【修复 N17】asyncio.get_event_loop() 在 Python 3.10+ 已弃用，
+        # 在子线程/无运行循环时不稳定。改用 get_running_loop()（在协程内
+        # 必然有运行中的事件循环）。
+        loop = asyncio.get_running_loop()
 
         def _stream_to_queue():
             try:
@@ -148,7 +154,14 @@ class OpenAIAdapter(BaseLLMAdapter):
                     "completion_tokens": response.usage.completion_tokens,
                     "total_tokens": response.usage.total_tokens,
                 }
-            
+
+            # 【修复 N17】非流式路径补写 last_stats，使调用方能拿到本次统计
+            self.last_stats = StreamStats(
+                model=self.model,
+                usage=usage,
+                latency_ms=latency_ms,
+            )
+
             return LLMResponse(
                 content=content,
                 model=self.model,

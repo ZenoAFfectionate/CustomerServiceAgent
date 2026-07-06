@@ -7,8 +7,7 @@ from rag.api.models import (
     DeleteResponse, DocumentInfo, DocumentListResponse, DocumentUploadResponse, IngestBlocksRequest,
 )
 from rag.config import RAG_CONFIG
-from rag.indexing import indexer
-from rag.indexing.registry import get_registry
+from rag.knowledge_base import corpus_management
 
 router = APIRouter(prefix="/documents", tags=["documents"])
 
@@ -23,14 +22,35 @@ router = APIRouter(prefix="/documents", tags=["documents"])
     ),
 )
 async def upload_document(file: UploadFile = File(..., description="待上传的文档文件")) -> DocumentUploadResponse:
-    raw = await file.read()
-    if len(raw) > RAG_CONFIG["upload_max_size_mb"] * 1024 * 1024:
-        raise PayloadTooLargeError(f"文件大小超过限制（{RAG_CONFIG['upload_max_size_mb']}MB）")
+    max_size = RAG_CONFIG["upload_max_size_mb"] * 1024 * 1024
+    raw = await _read_upload_within_limit(file, max_size)
     try:
-        meta = indexer.ingest_file(file.filename, raw)
+        meta = corpus_management.ingest_upload(file.filename, raw)
     except ValueError as e:
         raise ValidationError(str(e))
     return DocumentUploadResponse(**meta)
+
+
+async def _read_upload_within_limit(file: UploadFile, max_size: int, chunk_size: int = 1024 * 1024) -> bytes:
+    """分块读取上传文件，一旦累计字节数超过 `max_size` 立即中止并抛出
+    `PayloadTooLargeError`。
+
+    【修复 L8】此前 `raw = await file.read()` 会先把整个文件完整读入内存，
+    再校验 `len(raw) > max_size`——上传超大文件时，会在被拒绝之前就已经
+    完整占用了对应内存（存在 OOM 风险）。改为按 `chunk_size`（默认 1MB）
+    分块读取并累计计数，超限时立即中止，不再继续读取/占用后续内存。
+    """
+    chunks = []
+    total = 0
+    while True:
+        chunk = await file.read(chunk_size)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > max_size:
+            raise PayloadTooLargeError(f"文件大小超过限制（{RAG_CONFIG['upload_max_size_mb']}MB）")
+        chunks.append(chunk)
+    return b"".join(chunks)
 
 
 @router.post(
@@ -41,7 +61,7 @@ async def upload_document(file: UploadFile = File(..., description="待上传的
 )
 def ingest_blocks(payload: IngestBlocksRequest) -> DocumentUploadResponse:
     try:
-        meta = indexer.ingest_blocks(payload.blocks, filename=payload.filename)
+        meta = corpus_management.ingest_blocks(payload.blocks, filename=payload.filename)
     except ValueError as e:
         raise ValidationError(str(e))
     return DocumentUploadResponse(**meta)
@@ -54,7 +74,7 @@ def ingest_blocks(payload: IngestBlocksRequest) -> DocumentUploadResponse:
     description="返回当前知识库中已索引的全部文档及其分块数量。",
 )
 def list_documents() -> DocumentListResponse:
-    docs = indexer.list_documents()
+    docs = corpus_management.list_documents()
     return DocumentListResponse(total=len(docs), documents=[DocumentInfo(**d) for d in docs])
 
 
@@ -65,10 +85,19 @@ def list_documents() -> DocumentListResponse:
     responses={404: {"description": "文档不存在"}},
 )
 def get_document(doc_id: str) -> DocumentInfo:
-    meta = get_registry().get(doc_id)
+    meta = corpus_management.get_document(doc_id)
     if meta is None:
         raise NotFoundError(f"文档不存在: {doc_id}")
     return DocumentInfo(**meta)
+
+
+@router.get(
+    "/{doc_id}/history",
+    summary="文档版本历史",
+    description="返回该文档每次（重新）导入的内容哈希、块数与时间，见 `rag/knowledge_base/versioning.py`。",
+)
+def get_document_history(doc_id: str) -> list:
+    return corpus_management.get_document_history(doc_id)
 
 
 @router.delete(
@@ -79,7 +108,7 @@ def get_document(doc_id: str) -> DocumentInfo:
     responses={404: {"description": "文档不存在"}},
 )
 def delete_document(doc_id: str) -> DeleteResponse:
-    deleted = indexer.delete_document(doc_id)
+    deleted = corpus_management.delete_document(doc_id)
     if not deleted:
         raise NotFoundError(f"文档不存在: {doc_id}")
     return DeleteResponse(doc_id=doc_id, deleted=True)

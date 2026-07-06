@@ -18,14 +18,26 @@
 用法：
   python dataset/preprocess.py
   python dataset/preprocess.py --input dataset/raw/Bitext_customer_support.parquet --output-dir dataset/
+  python dataset/preprocess.py --eval           # 对已生成的评测用例运行检索命中率评测（见 run_retrieval_eval）
 """
 import argparse
 import json
 import os
+import re
 import sys
 from collections import defaultdict
 
 import pandas as pd
+
+# 支持以脚本方式直接运行（python dataset/preprocess.py），保证 `--eval`
+# 依赖的 `from rag import pipeline`（延迟导入）能找到项目根目录下的 rag/ 包
+# ——脚本运行时 sys.path[0] 默认是脚本所在目录（dataset/），而非项目根目录。
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
+
+
+_PLACEHOLDER_RE = re.compile(r"\{\{.*?\}\}")
 
 
 def build_kb_blocks(df: pd.DataFrame) -> list:
@@ -47,8 +59,12 @@ def build_kb_blocks(df: pd.DataFrame) -> list:
             if not instruction or len(instruction) < 5:
                 continue
 
-            # 去重：规范化后比较
-            normalized = instruction.lower().replace("{{order number}}", "").replace("{{", "").replace("}}", "").strip()
+            # 去重：规范化后比较。【修复 L18】此前仅 replace("{{order number}}", "")
+            # 再简单剥离 "{{"/"}}"，其他占位符（如 "{{product id}}"）移除花括号
+            # 后会残留 "product id" 字面文本，导致"仅占位符不同"的近重复
+            # instruction（如 "查询{{order number}}物流" vs "查询{{product id}}物流"）
+            # 未被识别为重复而各自入库。改用正则统一移除全部 `{{...}}` 占位符。
+            normalized = _PLACEHOLDER_RE.sub("", instruction.lower()).strip()
             if normalized in seen_texts:
                 continue
             seen_texts.add(normalized)
@@ -81,6 +97,13 @@ def build_eval_cases(df: pd.DataFrame, n_per_category: int = 3) -> list:
     - 构造多轮对话场景（同 category 下连续提问）
     - 包含边界 case（instruction 极短/极长、含模板占位符等）
     """
+    # 【修复 L18】此前直接对原始 df 取每组第一行 `str(row["instruction"])`；
+    # 若该行 instruction 恰好为 NaN（数据集缺陷），`str(nan)` 会生成字面量
+    # 字符串 "nan" 作为评测 query，污染评测集且不易被发现。这里先过滤掉
+    # instruction/response 为空的行，保证后续所有采样来源都是有效数据。
+    df = df.dropna(subset=["instruction", "response"])
+    df = df[df["instruction"].astype(str).str.strip() != ""]
+
     eval_cases = []
 
     # 1. 基础场景：每 category 取不同 intent 的典型 case
@@ -142,6 +165,75 @@ def build_eval_cases(df: pd.DataFrame, n_per_category: int = 3) -> list:
     return eval_cases
 
 
+def run_retrieval_eval(eval_cases: list, top_k: int = 5) -> dict:
+    """对评测用例集运行检索命中率评测（修复审查报告 L17：`--eval` 此前在
+    帮助文本中被引导使用，但 `main()` 从未定义该参数，实际运行会被
+    argparse 报 `unrecognized arguments` 拒绝，功能完全不可用）。
+
+    调用 `rag.pipeline.retrieve()` 对每条用例检索，检查返回上下文块的
+    `category`/`intent` 标签（`build_kb_blocks` 写入知识块时附带）是否命中
+    用例的 `expected_category`/`expected_intent`，统计命中率。
+
+    仅评测 "basic"/"boundary" 类型用例——"multiturn" 用例依赖多轮 query
+    重写能力，单轮 `retrieve()` 无法公平评测，予以跳过。
+
+    Args:
+        eval_cases: `build_eval_cases()` 产出的评测用例列表（或从磁盘加载的等价 JSON）
+        top_k: 检索 top_k
+
+    Returns:
+        {"total_cases": int, "hit_count": int, "hit_rate": float,
+         "per_case": [{"id", "query", "hit"}, ...]}
+    """
+    from rag import pipeline
+
+    evaluable = [c for c in eval_cases if c.get("type") in ("basic", "boundary")]
+    per_case = []
+    hit_count = 0
+    for case in evaluable:
+        contexts = pipeline.retrieve(case["query"], top_k=top_k)
+        hit = any(
+            c.get("category") == case.get("expected_category")
+            and c.get("intent") == case.get("expected_intent")
+            for c in contexts
+        )
+        hit_count += int(hit)
+        per_case.append({"id": case.get("id"), "query": case["query"], "hit": hit})
+
+    total = len(evaluable)
+    return {
+        "total_cases": total,
+        "hit_count": hit_count,
+        "hit_rate": round(hit_count / total, 4) if total else 0.0,
+        "per_case": per_case,
+    }
+
+
+def _run_eval_mode(args) -> None:
+    """`--eval` 模式：加载已生成的评测用例集并运行检索命中率评测。"""
+    eval_path = args.eval_path or os.path.join(args.output_dir, "eval_cases.json")
+    if not os.path.exists(eval_path):
+        print(f"❌ 评测用例文件不存在: {eval_path}")
+        print("   请先运行 `python dataset/preprocess.py` 生成 eval_cases.json，"
+              "并将 kb_blocks.json 导入 RAG 知识库后再运行 --eval。")
+        sys.exit(1)
+
+    with open(eval_path, "r", encoding="utf-8") as f:
+        eval_cases = json.load(f)
+    print(f"📖 加载评测用例: {len(eval_cases)} 条（来自 {eval_path}）")
+
+    report = run_retrieval_eval(eval_cases, top_k=args.eval_top_k)
+    print("\n" + "=" * 60)
+    print("📊 检索命中率评测结果")
+    print(f"   评测用例数（basic/boundary）: {report['total_cases']}")
+    print(f"   命中数: {report['hit_count']}")
+    print(f"   命中率: {report['hit_rate']:.2%}")
+    print("=" * 60)
+    for item in report["per_case"]:
+        mark = "✅" if item["hit"] else "❌"
+        print(f"   {mark} [{item['id']}] {item['query'][:40]}")
+
+
 def main():
     parser = argparse.ArgumentParser(description="预处理电商客服数据集为 RAG 知识库格式")
     parser.add_argument(
@@ -152,11 +244,32 @@ def main():
         "--output-dir", default="dataset/",
         help="输出目录",
     )
+    # 【修复 L17】补全 --eval/--eval-path/--eval-top-k 参数定义（此前帮助
+    # 文本引导使用 --eval 但从未定义，见 run_retrieval_eval 的说明）。
+    parser.add_argument(
+        "--eval", action="store_true",
+        help="对已生成的评测用例集运行检索命中率评测，而非重新构建知识库块",
+    )
+    parser.add_argument(
+        "--eval-path", default=None,
+        help="评测用例 JSON 路径，默认取 <output-dir>/eval_cases.json",
+    )
+    parser.add_argument("--eval-top-k", type=int, default=5, help="--eval 模式下检索使用的 top_k")
     args = parser.parse_args()
+
+    if args.eval:
+        _run_eval_mode(args)
+        return
 
     if not os.path.exists(args.input):
         print(f"❌ 输入文件不存在: {args.input}")
-        print("   请先下载：python dataset/preprocess.py --download")
+        # 【修复 L17】此前提示"请先下载：python dataset/preprocess.py --download"，
+        # 但该参数从未被定义/实现，运行即报错。改为明确的手动获取指引，不再
+        # 承诺一个不存在的自动下载功能。
+        print("   请手动下载 Bitext 客服数据集（Parquet 格式，含 instruction/response/"
+              "category/intent 字段）并放置到该路径，例如：")
+        print("     - HuggingFace: bitext/Bitext-customer-support-llm-chatbot-training-dataset")
+        print("     - 或任意提供同等字段的客服问答数据集")
         sys.exit(1)
 
     print(f"📖 读取数据集: {args.input}")
@@ -200,9 +313,9 @@ def main():
     print("   1. 导入知识库：")
     print("      python -c \"")
     print("        import json")
-    print("        from rag.indexing import indexer")
+    print("        from rag.knowledge_base import corpus_management")
     print("        blocks = json.load(open('dataset/kb_blocks.json', encoding='utf-8'))")
-    print("        indexer.ingest_blocks(blocks, filename='bitext_customer_support.json')")
+    print("        corpus_management.ingest_blocks(blocks, filename='bitext_customer_support.json')")
     print("      \"")
     print("   2. 运行评测：")
     print("      python dataset/preprocess.py --eval")

@@ -23,7 +23,10 @@ import sys
 import json
 
 import torch
-import wandb
+try:
+    import wandb
+except ImportError:
+    wandb = None  # type: ignore
 from sklearn.model_selection import train_test_split
 from sentence_transformers import CrossEncoder, InputExample
 from sentence_transformers.cross_encoder.evaluation import CrossEncoderClassificationEvaluator
@@ -57,11 +60,18 @@ MAX_LABEL = 2.0
 # ======================== 数据预处理 ========================
 
 def truncate_to_max_length(tokenizer, query, doc, max_length=512):
-    """截断 query+doc 到最大长度。"""
-    tokens = tokenizer.encode_plus(query, doc, truncation=True, max_length=max_length)
-    decoded = tokenizer.decode(tokens["input_ids"], skip_special_tokens=True)
-    parts = decoded.split(tokenizer.sep_token) if tokenizer.sep_token else [decoded]
-    return parts[0], parts[1] if len(parts) > 1 else ""
+    """分别截断 query 与 doc 到各自允许的最大 token 数。
+
+    【修复 N1】此前用 encode_plus(query, doc) 编码后 decode 再按 sep_token
+    切分——但 Qwen3-Reranker 等 CrossEncoder 无 sep_token（``sep_token is None``），
+    导致 ``parts = [decoded]``，函数返回 ``(decoded, "")``，整段拼接文本被当作
+    query 而 **doc 被静默置空**，训练数据文档侧信号完全丢失。改为分别按 token
+    数裁剪 query/doc，不依赖 sep_token。
+    """
+    half = max_length // 2
+    q_ids = tokenizer.encode(query, add_special_tokens=False, max_length=half, truncation=True)
+    d_ids = tokenizer.encode(doc, add_special_tokens=False, max_length=max_length - half, truncation=True)
+    return tokenizer.decode(q_ids, skip_special_tokens=True), tokenizer.decode(d_ids, skip_special_tokens=True)
 
 
 def make_collate_fn(tokenizer, max_length):
@@ -124,7 +134,10 @@ def main():
     optimizer = torch.optim.AdamW(model.model.parameters(), lr=LEARNING_RATE)
     scaler = torch.amp.GradScaler("cuda", enabled=USE_AMP and device.type == "cuda")
 
-    wandb.init(project=PROJECT_NAME, name=RUN_NAME)
+    if wandb is not None:
+        wandb.init(project=PROJECT_NAME, name=RUN_NAME)
+    else:
+        logger.warning("⚠️ wandb 未安装，跳过实验追踪（pip install wandb 可启用）")
 
     best_acc = 0.0
     patience = 0
@@ -147,13 +160,14 @@ def main():
             scaler.update()
 
             progress_bar.set_description(f"Loss: {loss.item():.4f}")
-            if step % 10 == 0:
+            if step % 10 == 0 and wandb is not None:
                 wandb.log({"train_loss": loss.item(), "epoch": epoch})
 
         # 验证 + 早停
         acc = evaluate_on_val(model, val_data)
         val_acc = acc["dev-set-eval_accuracy"]
-        wandb.log({"val_acc": val_acc, "epoch": epoch})
+        if wandb is not None:
+            wandb.log({"val_acc": val_acc, "epoch": epoch})
         logger.info(f"✅ Epoch {epoch + 1} 验证准确率: {val_acc:.4f}")
 
         if val_acc > best_acc:

@@ -7,16 +7,17 @@
     - 增量更新：以 page_url 为粒度先删后插
 
 依赖 `elasticsearch` 包；服务不可用时 `health_check()` 返回 False，
-上层应捕获异常并降级到 `LocalKeywordStore`。
+上层应捕获异常并降级到 `LocalKeywordStore`（见 `rag/indexing/local_index.py`）。
 
-【优化点】本类现由 `keyword_store.get_keyword_store()` 以进程级单例方式持有，
+【优化点】本类现由 `store.get_keyword_store()` 以进程级单例方式持有，
 `_client`/`_index_ready` 等状态在进程生命周期内可安全复用。
 """
 import threading
 from typing import List
 
+from config.config_loader import logger
 from rag.config import RAG_CONFIG
-from rag.indexing.keyword_store import BaseKeywordStore
+from rag.indexing.store import BaseKeywordStore
 from rag.schema import DocBlock, get_es_mapping, get_es_mapping_fallback
 
 _OUTPUT_FIELDS = [
@@ -61,8 +62,11 @@ class ESKeywordStore(BaseKeywordStore):
             return
         try:
             client.indices.create(index=self.index_name, body=get_es_mapping())
-        except Exception:
-            # 集群未安装 IK 分词插件，降级为 standard analyzer
+        except Exception as e:
+            # 集群未安装 IK 分词插件，降级为 standard analyzer。仅在索引创建这个
+            # 低频操作时记录一次日志（不在 search()/upsert() 等高频路径打日志），
+            # 便于运维知晓当前中文分词效果会弱于 IK（standard 按字符切分）。
+            logger.warning(f"⚠️ 创建 IK 分词索引失败（{e}），降级为 standard analyzer")
             client.indices.create(index=self.index_name, body=get_es_mapping_fallback())
         self._index_ready = True
 
@@ -147,5 +151,6 @@ class ESKeywordStore(BaseKeywordStore):
     def count(self) -> int:
         try:
             return int(self._get_client().count(index=self.index_name)["count"])
-        except Exception:
+        except Exception as e:
+            logger.warning(f"⚠️ ES count() 失败，返回 0（可能是连接异常而非真的无数据）: {e}")
             return 0

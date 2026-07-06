@@ -7,20 +7,21 @@
     - 增量更新：以 page_url 为粒度先删后插，避免全量重建
 
 同时实现 `BaseVectorStore` 接口（create_collection/upsert/delete_by_doc_id/search/
-count/health_check），供 `rag/retrieval/milvus_search.py` 与 pipeline 统一调用。
+count/health_check），供 `rag/retrieval/hybrid_search.py` 与 pipeline 统一调用。
 
 依赖 `pymilvus`；未安装或无法连接时，`health_check()` 返回 False，
-上层应捕获异常并降级到 `LocalVectorStore`（见 `rag/indexing/vector_store.py`）。
+上层应捕获异常并降级到 `LocalVectorStore`（见 `rag/indexing/local_index.py`）。
 
-【优化点】本类现由 `vector_store.get_vector_store()` 以进程级单例方式持有
-（见该模块注释），因此 `_connected`/`_collection_ready` 等状态在进程生命周期
-内可安全复用，无需每次调用都重新建连/重复检查集合是否存在。
+【优化点】本类现由 `store.get_vector_store()` 以进程级单例方式持有
+（见 `rag/indexing/store.py` 注释），因此 `_connected`/`_collection_ready` 等
+状态在进程生命周期内可安全复用，无需每次调用都重新建连/重复检查集合是否存在。
 """
 import threading
 from typing import List, Optional
 
+from config.config_loader import logger
 from rag.config import RAG_CONFIG
-from rag.indexing.vector_store import BaseVectorStore
+from rag.indexing.store import BaseVectorStore
 from rag.schema import DocBlock, get_milvus_schema_fields
 
 
@@ -131,6 +132,13 @@ class MilvusVectorStore(BaseVectorStore):
 
     def delete_by_doc_id(self, doc_id: str) -> int:
         collection = self._get_collection()
+        # 【修复 N7】此前 expr=f'doc_id == "{doc_id}"' 直接 f-string 拼接，
+        # 若 doc_id 含 "/\/不可见字符会导致 Expr 语法错误或匹配错误集合。
+        # 现对 doc_id 做白名单校验（与 metadata.new_doc_id 的 [0-9a-f] 格式一致），
+        # 非法字符直接拒绝。
+        import re
+        if not re.match(r'^[0-9a-zA-Z_\-]+$', doc_id or ""):
+            raise ValueError(f"doc_id 含非法字符，仅允许 [0-9a-zA-Z_-]: {doc_id!r}")
         res = collection.query(expr=f'doc_id == "{doc_id}"', output_fields=["global_chunk_idx"])
         if not res:
             return 0
@@ -174,7 +182,10 @@ class MilvusVectorStore(BaseVectorStore):
     def count(self) -> int:
         try:
             return self._get_collection().num_entities
-        except Exception:
+        except Exception as e:
+            # 静默返回 0 会让 get_stats()/dashboard() 展示"知识库为空"这种误导性
+            # 信息（实际可能是连接故障），记录告警以便与"真的没有数据"区分。
+            logger.warning(f"⚠️ Milvus count() 失败，返回 0（可能是连接异常而非真的无数据）: {e}")
             return 0
 
 

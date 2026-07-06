@@ -80,9 +80,9 @@
 | **调用入口** | HTTP：`POST /api/retrieve`、`POST /api/chat`；或直接 Python 调用 `rag.pipeline.retrieve()`/`answer()` | `ReActAgent.run(query)` |
 | **启动脚本** | `scripts/run_RAGserver.sh` | `scripts/run_AGTserver.sh` |
 
-**推荐集成方式（Tool-based，见 [TODO.md](TODO.md) 难点追踪）**：将 `rag.pipeline.retrieve()`（或对 `rag/api` 的 HTTP 调用）封装为一个 hello-agents `Tool` 子类，注册进 `ToolRegistry`，交由 `ReActAgent` 在多轮对话中自主判断"是否需要检索"并调用——这样 `rag/` 服务可以独立开发、测试、部署、扩容，`agent/` 只需持有一个工具接口，两者松耦合、可分别演进。
+**推荐集成方式（Tool-based，见 [TODO.md](TODO.md) 难点追踪）**：将 `rag.pipeline.retrieve()`（或对 `rag/api` 的 HTTP 调用）封装为一个 hello-agents `Tool` 子类，注册进 `ToolRegistry`，交由 `ReActAgent` 在多轮对话中自主判断"是否需要检索"并调用——这样 `rag/` 服务可以独立开发、测试、部署、扩容，`agent/` 只需持有一个工具接口，两者松耦合、可分别演进。RAG 侧的适配器已提供在 `rag/integration/`：`agent_integration.py`（`rag_retrieve_tool`/`rag_answer_tool`，不抛异常、返回结构化结果）+ `tool_usage.py`（OpenAI Function Calling 风格的工具 Schema + `dispatch_tool_call()`），Agent 侧只需在 `ToolRegistry` 中注册这两个函数即可完成对接。
 
-> 📌 **当前状态**：`rag/` 服务已完整可用（可独立启动并通过浏览器/接口体验问答）；`agent/` 框架已引入且自带测试通过；**两者之间的工具化调用集成代码尚待编写**，是 M4 里程碑的核心待办（详见 [TODO.md](TODO.md)）。
+> 📌 **当前状态**：`rag/` 服务已完整可用（可独立启动并通过浏览器/接口体验问答）；`agent/` 框架已引入且自带测试通过；`rag/integration/` 已提供 RAG 侧的工具适配器与调用 Schema，**Agent 侧将其注册进 `ToolRegistry` 的接线代码尚待编写**，是 M4 里程碑的核心待办（详见 [TODO.md](TODO.md)）。
 
 ---
 
@@ -276,7 +276,7 @@ Qwen3-Embedding / Qwen3-Reranker 系列提供 **0.6B / 4B / 8B** 三个尺寸，
 | 🔄 融合去重 | RRF / 加权融合 + TF-IDF cosine 相似度去重 | 消除双模检索的重复结果 |
 | 📊 Reranker 精排 | Qwen3-Reranker via TEI（默认本地降级：Embedder 余弦代理） | 从 ~20 个候选中精选 Top-5 |
 | 💬 生成融合 | vLLM/OpenAI 兼容 Chat 接口（默认本地降级：抽取式摘录 + Citation） | 基于检索上下文生成带引用的回答 |
-| 🌐 服务化 | FastAPI 后端 + 轻量前端（`rag/web/`） | 文档上传/检索/问答一站式体验，详见 `rag/README.md` |
+| 🌐 服务化 | FastAPI 后端 + 轻量前端（`rag/web/`） | 文档上传（含版本历史）/ 检索测试 / 流式问答 / 监控看板一站式体验，详见 `rag/README.md` |
 
 **核心设计**：每个组件（向量库/关键词库/Embedding/Reranker/生成）都有"真实服务后端"与"本地降级后端"双实现，默认本地降级，**零外部依赖即可跑通全链路**；生产环境通过环境变量切换到 Milvus/ES/TEI/vLLM 真实后端（见 [rag/README.md](rag/README.md)）。
 
@@ -399,9 +399,9 @@ python tests/experiment/preprocess.py
 # 导入知识库到 RAG 系统
 python -c "
 import json
-from rag.indexing import indexer
+from rag.knowledge_base import corpus_management
 blocks = json.load(open('tests/experiment/kb_blocks.json', encoding='utf-8'))
-indexer.ingest_blocks(blocks, filename='bitext_customer_support.json')
+corpus_management.ingest_blocks(blocks, filename='bitext_customer_support.json')
 "
 
 # 一键端到端评测（自动预处理→导入→运行31条用例→输出报告）
@@ -459,7 +459,7 @@ pytest tests/test_agent/ -v      # 部分用例需先在 .env 配置 LLM_API_KEY
 | 🤖 model/ | ✅ 基础完成 | 80% | TEI 客户端 + SFT/DPO 训练代码（待实际部署验证） |
 | 🔍 rag/ | ✅ 完成 | 100% | 索引/检索/融合/精排/生成 + FastAPI 后端 + 前端 + 文档 + 测试全交付，已完成全组件代码审计与性能优化 |
 | 💬 agent/ | 🔄 框架就位 | 40% | hello-agents 生产级框架已引入 + 自带测试迁移完成；与 rag/ 的工具化集成待开发（M4 核心） |
-| 🧪 tests/ | ✅ 模块化完成 | 90% | 按模块拆分为 `test_process/`（10）+ `test_rag/`（13）+ `test_agent/`（19），统一 `conftest.py` 入口 |
+| 🧪 tests/ | ✅ 模块化完成 | 90% | 按模块拆分为 `test_process/`（10）+ `test_rag/`（42，按 rag/ 7 个子模块 + 跨模块组合分文件）+ `test_agent/`（19），统一 `conftest.py` 入口 |
 | 📊 评测体系 | ✅ 基础完成 | 50% | Bitext 电商客服数据集（26,872 条 QA / 11 类别 27 意图），本地降级后端召回率 **93.5%**（31 条评测用例），平均延迟 574ms；详见 [dataset/README.md](dataset/README.md) |
 
 详见 [TODO.md](TODO.md)。

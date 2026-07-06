@@ -45,6 +45,9 @@ class ToolParameter(BaseModel):
     description: str
     required: bool = True
     default: Any = None
+    # 【修复 N5】array/object 类型的 JSON Schema 需要 items/properties 来描述
+    # 元素结构，否则严格校验的 LLM 服务可能拒绝该工具定义。
+    items: Optional[Dict[str, Any]] = None
 
 
 class Tool(ABC):

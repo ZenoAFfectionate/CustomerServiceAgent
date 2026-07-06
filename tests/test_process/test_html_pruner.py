@@ -294,6 +294,12 @@ class TestEdgeCases:
         assert out == short
 
     def test_embed_fn_not_called_when_no_blocks(self):
+        """块树为空时不应调用嵌入服务。
+
+        注：修复审查报告 M7 后，短文本非空时（如 "<p>短</p>"）`build_block_tree`
+        不再返回空列表，而是保留为单块（避免短内容被静默丢弃）；因此本测试
+        改用真正无内容的 HTML 来触发"块树为空"这一场景。
+        """
         calls = []
 
         def spy_embed(texts):
@@ -301,7 +307,7 @@ class TestEdgeCases:
             return mock_embed_fn(texts)
 
         prune_by_embedding(
-            "<p>短</p>", "退款", embed_fn=spy_embed,
+            "", "退款", embed_fn=spy_embed,
             max_node_words=50, min_node_words=100, zh_char=True,
         )
         assert calls == []  # 块树为空时不应调用嵌入服务

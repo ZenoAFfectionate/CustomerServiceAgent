@@ -17,20 +17,28 @@ class RetrieveRequest(BaseModel):
 
 
 class ContextItem(BaseModel):
-    global_chunk_idx: int
-    doc_id: str
-    chunk_idx: int
-    page_name: str
-    title: str
-    page_url: str
-    text: str
+    # 【修复 L16】此前全部字段无默认值（必填），与 `DocBlock.to_dict()` 的
+    # 输出脆弱耦合——真实后端（Milvus/ES）若返回缺字段的记录（如字段被
+    # 截断、mapping 变更后旧数据缺新字段），`RetrieveResponse(...)` 校验会
+    # 直接抛 422，而不是优雅降级。现对齐 `rag/schema.py` 中 `DocBlock` 各
+    # 字段的默认值，缺字段时兜底为该默认值而非直接校验失败。
+    global_chunk_idx: int = -1
+    doc_id: str = ""
+    chunk_idx: int = 0
+    page_name: str = ""
+    title: str = ""
+    page_url: str = ""
+    text: str = ""
     html_content: str = ""
     block_path: str = ""
     summary: str = ""
     question: str = ""
     time: str = ""
-    score: float
-    source_retriever: str
+    score: float = 0.0
+    source_retriever: str = ""
+    # 【修复 N35】DocBlock.to_dict() 始终输出 source 字段（文档来源标识），
+    # 但 ContextItem 此前无此字段，经 API 返回时 source 被静默丢弃。
+    source: str = ""
 
 
 class RetrieveResponse(BaseModel):
@@ -50,7 +58,7 @@ class CitationItem(BaseModel):
     page_url: str
     block_path: str = ""
     title: str = ""
-    score: float
+    score: float = 0.0
 
 
 class ChatResponse(BaseModel):

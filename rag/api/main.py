@@ -23,6 +23,7 @@ from fastapi.staticfiles import StaticFiles
 from config.config_loader import logger
 from rag.api.errors import RagAPIError, rag_error_handler, unhandled_error_handler
 from rag.api.routers import chat, documents, health, retrieve
+from rag.observability import dashboard
 
 _CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 _WEB_DIR = os.path.join(os.path.dirname(_CURRENT_DIR), "web")
@@ -38,10 +39,9 @@ async def _lifespan(_app: FastAPI):
     使用 FastAPI 推荐的 `lifespan` 上下文管理器写法，替代已废弃的 `@app.on_event`。
     """
     try:
-        from rag.indexing.embedder import get_embedder
-        from rag.indexing.registry import get_registry
-        from rag.indexing.vector_store import get_vector_store
-        from rag.indexing.keyword_store import get_keyword_store
+        from rag.indexing.embedding import get_embedder
+        from rag.indexing.metadata import get_registry
+        from rag.indexing.store import get_keyword_store, get_vector_store
 
         get_embedder()
         get_registry()
@@ -83,6 +83,7 @@ app.include_router(health.router, prefix="/api")
 app.include_router(documents.router, prefix="/api")
 app.include_router(retrieve.router, prefix="/api")
 app.include_router(chat.router, prefix="/api")
+app.include_router(dashboard.router, prefix="/api")
 
 if os.path.isdir(_WEB_DIR):
     app.mount("/ui", StaticFiles(directory=_WEB_DIR, html=True), name="ui")

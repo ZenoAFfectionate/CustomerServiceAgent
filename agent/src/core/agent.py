@@ -535,6 +535,10 @@ class Agent(ABC):
                 }
                 if param.default is not None:
                     properties[param.name]["default"] = param.default
+                # 【修复 N5】array 类型参数需生成 items，否则严格校验的 LLM
+                # 服务可能拒绝该工具定义，模型也无法得知数组元素结构。
+                if param.type == "array" and getattr(param, "items", None):
+                    properties[param.name]["items"] = param.items
                 if getattr(param, "required", True):
                     required.append(param.name)
 
@@ -664,9 +668,22 @@ class Agent(ABC):
         # 1. 尝试执行 Tool 对象
         tool = self.tool_registry.get_tool(tool_name)
         if tool:
+            # 【修复 N3】此前直接 tool.run_with_timing() 绕过 registry.execute_tool，
+            # 导致 circuit_breaker.record_result / is_open 永不触发——RAG 工具走
+            # register_tool() 注册后，失败计数永为 0、熔断器永不打开。现补齐
+            # 熔断器检查（执行前）与计数（执行后）。
+            cb = getattr(self.tool_registry, "circuit_breaker", None)
+            if cb and cb.is_open(tool_name):
+                status = cb.get_status(tool_name)
+                return f"❌ 工具 '{tool_name}' 已被熔断，{status.get('recover_in_seconds', '?')} 秒后可用。"
+
             try:
                 typed_arguments = self._convert_parameter_types(tool_name, arguments)
                 response = tool.run_with_timing(typed_arguments)
+
+                # 熔断器计数
+                if cb:
+                    cb.record_result(tool_name, response)
 
                 # 根据状态添加前缀
                 from ..tools.response import ToolStatus
@@ -676,7 +693,14 @@ class Agent(ABC):
                 elif response.status == ToolStatus.PARTIAL:
                     return f"⚠️ 部分成功: {response.text}"
                 else:
-                    return response.text
+                    # 【修复 N4】此前仅返回 response.text，response.data（含
+                    # citations/results 等结构化数据）被丢弃。现把 data 追加为
+                    # JSON 片段，使模型/下游能获取引用来源等结构化信息。
+                    import json as _json
+                    text = response.text
+                    if response.data:
+                        text += f"\n[data] {_json.dumps(response.data, ensure_ascii=False, default=str)}"
+                    return text
             except Exception as exc:
                 return f"❌ 工具调用失败：{exc}"
 
@@ -856,10 +880,18 @@ class Agent(ABC):
         for tool_name in sorted(self.tool_registry.list_tools()):
             tool = self.tool_registry.get_tool(tool_name)
             if tool:
+                # 【修复 N26】此前用 hasattr(tool, 'parameters')，但 Tool 基类
+                # 无 parameters 属性（只有 get_parameters() 方法），导致哈希的
+                # parameters 永远为 []，工具参数变化永远检测不到。改为调用
+                # get_parameters() 获取参数名列表。
+                try:
+                    param_names = [p.name for p in tool.get_parameters()]
+                except Exception:
+                    param_names = []
                 tools_signature[tool_name] = {
                     "name": tool.name,
                     "description": tool.description[:100] if tool.description else "",
-                    "parameters": list(tool.parameters.keys()) if hasattr(tool, 'parameters') and tool.parameters else []
+                    "parameters": param_names,
                 }
 
         schema_str = json.dumps(tools_signature, sort_keys=True)
@@ -1135,47 +1167,6 @@ class Agent(ABC):
             summary_parts.append(f"错误: {metadata['error']}")
 
         return "\n".join(summary_parts)
-
-    def _register_task_tool(self):
-        """注册 TaskTool（子代理工具）
-
-        自动注册逻辑，在 __init__ 中调用（如果启用）
-        """
-        from ..agents.factory import default_subagent_factory
-        from ..tools.builtin.task_tool import TaskTool
-
-        # 创建 Agent 工厂函数
-        def agent_factory(agent_type: str) -> Agent:
-            """为 TaskTool 创建子代理实例"""
-            # 决定使用哪个 LLM
-            if self.config.subagent_use_light_llm:
-                # 使用轻量模型
-                from ..core.llm import HelloAgentsLLM
-                light_llm = HelloAgentsLLM(
-                    provider=self.config.subagent_light_llm_provider,
-                    model=self.config.subagent_light_llm_model
-                )
-                llm = light_llm
-            else:
-                # 使用主模型
-                llm = self.llm
-
-            # 使用默认工厂创建子代理
-            return default_subagent_factory(
-                agent_type=agent_type,
-                llm=llm,
-                tool_registry=self.tool_registry,
-                config=self.config
-            )
-
-        # 创建并注册 TaskTool
-        task_tool = TaskTool(
-            agent_factory=agent_factory,
-            tool_registry=self.tool_registry,
-            config=self.config
-        )
-
-        self.tool_registry.register_tool(task_tool)
 
     def _register_task_tool(self):
         """注册 TaskTool（子代理工具）

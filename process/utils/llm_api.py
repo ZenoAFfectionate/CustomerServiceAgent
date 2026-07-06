@@ -235,17 +235,12 @@ def generate_summary_ChatGLM(text: str, page_url: str, model, tokenizer, max_new
         return text[:max_new_tokens]
 
 
-def generate_question_ChatGLM(
-    text: str,
-    page_url: str,
-    model,
-    tokenizer,
-    max_new_tokens: int = 64,
-    fallback_question: str = "该内容可构造相关业务问题",
-) -> str:
-    """使用 ChatGLM 根据文档内容生成一个代表性用户问题。"""
+def _build_question_prompt(text: str, page_url: str) -> str:
+    """构建"根据内容生成代表性用户问题"的提示词（vLLM 和 ChatGLM 共用，
+    从 `generate_question_ChatGLM` 抽出，供 `generate_question_vllm_async`
+    复用同一套提示词构建逻辑，避免两处实现漂移）。
+    """
     category = infer_chunk_category(page_url)
-    text = text.strip().replace("\x00", "")
 
     # 分类对应的提示词
     category_hints = {
@@ -256,7 +251,7 @@ def generate_question_ChatGLM(
     }
     hint = category_hints.get(category, category_hints["泛用类"])
 
-    prompt = (
+    return (
         f"你是一个电商平台知识问答构建助手，请根据以下内容生成一个有实际价值的用户问题。\n"
         f"要求：\n"
         f"- 问题应体现「{hint}」；\n"
@@ -266,11 +261,61 @@ def generate_question_ChatGLM(
         f"📄 内容：\n{text}"
     )
 
+
+def generate_question_ChatGLM(
+    text: str,
+    page_url: str,
+    model,
+    tokenizer,
+    max_new_tokens: int = 64,
+    fallback_question: str = "该内容可构造相关业务问题",
+) -> str:
+    """使用 ChatGLM 根据文档内容生成一个代表性用户问题。"""
+    text = text.strip().replace("\x00", "")
+    prompt = _build_question_prompt(text, page_url)
+
     try:
         response = _chatglm_generate(model, tokenizer, prompt, max_new_tokens, 0.7, 0.9)
         return response if response else fallback_question
     except Exception as e:
         logger.warning(f"⚠️ ChatGLM 问题生成失败: {e}，使用 fallback")
+        return fallback_question
+
+
+async def generate_question_vllm_async(
+    text: str,
+    page_url: str,
+    model: str = "glm",
+    max_new_tokens: int = 64,
+    fallback_question: str = "该内容可构造相关业务问题",
+) -> str:
+    """异步调用 vLLM 根据文档内容生成一个代表性用户问题。
+
+    对齐同步版 `generate_question_ChatGLM` 的 prompt 与语义，供
+    `text_process.generate_block_documents_async` 在 `gen_question=True`
+    时并发生成 question 字段（修复此前异步路径完全不生成 question 的
+    一致性 BUG，见代码审查报告 M1）。
+    """
+    text = text.strip().replace("\x00", "")
+    prompt = _build_question_prompt(text, page_url)
+
+    payload = {
+        "model": model,
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": max_new_tokens,
+        "temperature": 0.7,
+        "top_p": 0.9,
+    }
+
+    try:
+        async with sem:
+            start = time.time()
+            result = await call_vllm_with_retry_weighted(payload, timeout=VLLM_TIMEOUT)
+            question = result["choices"][0]["message"]["content"].strip()
+            logger.debug(f"✅ vLLM 异步问题生成成功 (耗时 {time.time() - start:.2f}s)")
+            return question or fallback_question
+    except Exception as e:
+        logger.error(f"⚠️ vLLM 异步问题生成失败: {e}，使用 fallback")
         return fallback_question
 
 

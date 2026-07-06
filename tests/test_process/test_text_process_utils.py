@@ -132,10 +132,15 @@ class TestBuildOptimalJiebaQuery:
         assert len(result["query"]["bool"]["should"]) > 0
 
     def test_empty_keywords(self):
+        """回归测试：修复审查报告 M10——空关键词此前会生成
+        {"bool": {"should": [], "minimum_should_match": "30%"}} 这种退化查询，
+        其行为依赖 ES 版本（可能被解释为全库召回或零召回）。现显式返回
+        match_none，保证空关键词时不召回任何结果，行为可预测。"""
         keywords = []
         fields = {"text": {"boost": 1}}
         result = build_optimal_jieba_query(keywords, fields)
-        assert result["query"]["bool"]["should"] == []
+        assert result["query"] == {"match_none": {}}
+        assert "highlight" in result
 
 
 # ======================== parse_time ========================

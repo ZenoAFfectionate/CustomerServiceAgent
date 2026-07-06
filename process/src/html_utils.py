@@ -179,7 +179,7 @@ def _remove_empty_tags(soup: BeautifulSoup) -> None:
                 # 纯空标签
                 tag.decompose()
                 changed = True
-            elif all(c.name == "br" or (not c.get_text().strip() and not [g for g in c.contents if isinstance(c, Tag)]) for c in child_tags):
+            elif all(c.name == "br" or (not c.get_text().strip() and not [g for g in c.contents if isinstance(g, Tag)]) for c in child_tags):
                 # 仅含 <br> 或空子标签
                 tag.decompose()
                 changed = True
@@ -522,6 +522,31 @@ def _is_ui_noise(tag: Tag) -> bool:
     return all(_UI_NOISE_RE.match(s.strip()) for s in strings)
 
 
+def _make_bare_text_tag(name: str, texts: list):
+    """构造仅包含裸文本（不含已被单独处理为子块的子标签）的独立 Tag。
+
+    `build_block_tree` 在 BFS 拆分节点时，若节点同时存在裸文本与被单独处理
+    的子标签（各自已成块或已入队列），此前会把整棵 `tree`（其 `get_text()`
+    会包含全部子标签文本）也作为独立块 append，导致父块与子块内容重复
+    （审查报告 H4）。这里改为只用收集到的裸文本片段构造一个全新的最小 Tag，
+    与已单独成块的子标签内容互不重叠。
+
+    Args:
+        name: 新 Tag 的标签名（沿用原节点名，仅用于路径展示，不影响语义）
+        texts: 裸文本片段列表（NavigableString 原文 + M7 中回收的小子标签文本）
+
+    Returns:
+        仅含拼接后裸文本的新 Tag；裸文本为空时返回 None。
+    """
+    text = "".join(texts).strip()
+    if not text:
+        return None
+    new_soup = BeautifulSoup("", "html.parser")
+    new_tag = new_soup.new_tag(name or "div")
+    new_tag.append(NavigableString(text))
+    return new_tag
+
+
 def build_block_tree(
     html: str,
     max_node_words: int = 512,
@@ -545,6 +570,12 @@ def build_block_tree(
     total_words = _count_words(soup, zh_char)
 
     if total_words < min_node_words:
+        # 【修复 M7】此前整页词数不足 min_node_words 时直接返回空列表，短
+        # 帮助页/零散小段落会被完全丢弃、永不进入知识库。只要页面确实有
+        # 内容（total_words > 0），仍应保留为单个整页块，而非直接丢弃；
+        # 仅当页面确实完全为空（total_words == 0）时才返回空列表。
+        if total_words > 0:
+            return [(soup, [], True)], str(soup)
         return [], str(soup)
 
     if total_words > max_node_words:
@@ -564,6 +595,11 @@ def build_block_tree(
             # 子标签序号计数器（用于区分同名标签）
             child_idx_map = {name: 0 for name in tag_children_count}
             bare_word_count = 0
+            # 【修复 H4/M7】收集裸文本的实际内容（而非仅统计词数），供拆分
+            # 结束后构造"仅含裸文本"的独立 Tag（而非整棵 tree），避免与已
+            # 单独成块的子标签内容重复；同时把因词数不足被跳过的小子标签
+            # 文本回收进来，避免小段落信息永久丢失。
+            bare_texts = []
 
             for child in tree.contents:
                 if isinstance(child, Tag):
@@ -571,6 +607,13 @@ def build_block_tree(
                     if child.name in ("table", "tbody"):
                         if _count_words(child, zh_char) >= min_node_words:
                             target_trees.append((child, path + [child.name], True))
+                        else:
+                            # 【修复 M7】过小的表格不再直接丢弃，回收其文本到
+                            # 父节点裸文本中。
+                            text = child.get_text()
+                            if text.strip():
+                                bare_texts.append(text)
+                                bare_word_count += _count_str_words(text, zh_char)
                         continue
 
                     # 跳过 UI 噪声块（进度条、导航文本等）
@@ -588,6 +631,13 @@ def build_block_tree(
                     words = _count_words(child, zh_char)
 
                     if words < min_node_words:
+                        # 【修复 M7】词数过少不单独成块，但文本不应直接丢弃：
+                        # 回收到父节点的裸文本中，避免小段落信息永久丢失
+                        # （此前既不计入裸文本也不单独成块，永久丢失）。
+                        text = child.get_text()
+                        if text.strip():
+                            bare_texts.append(text)
+                            bare_word_count += _count_str_words(text, zh_char)
                         continue
                     if words > max_node_words and len(new_path) < 64:
                         queue.append((child, new_path))
@@ -595,17 +645,19 @@ def build_block_tree(
                         target_trees.append((child, new_path, True))
                 else:
                     # NavigableString
-                    bare_word_count += _count_str_words(str(child), zh_char)
+                    text = str(child)
+                    bare_texts.append(text)
+                    bare_word_count += _count_str_words(text, zh_char)
 
             # 纯文本节点：论文 Algorithm 1 规定，当节点被拆分时，
-            # 节点的裸文本（直接附属于节点的文本，不在子标签中）应作为独立块
-            if bare_word_count >= min_node_words:
-                # 有足够裸文本：作为独立块
-                target_trees.append((tree, path, True))
-            elif bare_word_count > 0 and tag_children_count:
-                # 有裸文本且有子标签被处理：论文要求裸文本也作为独立块
-                # 即使文本较短，也保留以避免信息丢失
-                target_trees.append((tree, path, True))
+            # 节点的裸文本（直接附属于节点的文本，不在子标签中）应作为独立块。
+            # 【修复 H4】此前无论哪种情形都把整棵 `tree`（含全部子标签文本）
+            # append 为块，与已单独处理的子标签内容重复。现改为仅用收集到的
+            # 裸文本片段构造一个全新的最小 Tag，与子块内容互不重叠。
+            if bare_word_count >= min_node_words or (bare_word_count > 0 and tag_children_count):
+                bare_tag = _make_bare_text_tag(tree.name if isinstance(tree, Tag) else "div", bare_texts)
+                if bare_tag is not None:
+                    target_trees.append((bare_tag, path, True))
 
         return target_trees, str(soup)
 

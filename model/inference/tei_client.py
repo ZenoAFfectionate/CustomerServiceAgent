@@ -32,6 +32,7 @@ TEI (Text Embeddings Inference) 客户端。
 import os
 import sys
 import threading  # [Optimized] 添加线程锁保护单例初始化，与项目中 embedder/registry/vector_store 的模式一致
+import time
 import requests
 from typing import List, Optional
 
@@ -54,6 +55,8 @@ class TEIClient:
         embed_url: Optional[str] = None,
         rerank_url: Optional[str] = None,
         timeout: int = 30,
+        max_retries: int = 3,
+        retry_backoff_seconds: float = 0.5,
     ):
         """初始化 TEI 客户端。
 
@@ -61,6 +64,13 @@ class TEIClient:
             embed_url: Embedding 服务地址（如 http://localhost:8080）
             rerank_url: Reranker 服务地址（如 http://localhost:8081）
             timeout: 请求超时时间（秒）
+            max_retries: 【修复 L19】网络/超时类瞬时故障的最大重试次数
+                （不含首次请求）。此前 `embed`/`embed_batch`/`rerank` 仅调用
+                `raise_for_status()`，未捕获网络超时/连接失败等瞬时异常，
+                TEI 服务高负载下偶发超时会直接向上冒泡、无重试，而这类
+                瞬时故障往往重试后即可恢复。
+            retry_backoff_seconds: 重试的指数退避基准时间（秒），第 n 次重试
+                等待 `retry_backoff_seconds * 2**(n-1)` 秒。
         """
         self.embed_url = embed_url or os.environ.get(
             "TEI_EMBED_URL", "http://localhost:8080"
@@ -69,8 +79,60 @@ class TEIClient:
             "TEI_RERANK_URL", "http://localhost:8081"
         )
         self.timeout = timeout
+        self.max_retries = max_retries
+        self.retry_backoff_seconds = retry_backoff_seconds
         self.session = requests.Session()
         self.session.headers.update({"Content-Type": "application/json"})
+
+    def _post_with_retry(self, url: str, payload: dict) -> requests.Response:
+        """带指数退避重试的 POST 请求（修复 L19：TEI 调用无重试）。
+
+        【修复 N19】此前仅对 Timeout/ConnectionError 重试；JSONDecodeError
+        （body 非法）与可重试的瞬时 5xx（如 503）不在重试范围。现扩展为：
+        - 网络类 RequestException（超时、连接失败、SSL 错误等）→ 重试
+        - HTTP 5xx（服务端瞬时错误）→ 重试
+        - JSONDecodeError（响应体非法）→ 重试
+        - HTTP 4xx（客户端错误，请求本身有问题）→ 不重试，直接抛出
+        """
+        import json as _json
+
+        last_exc: Optional[Exception] = None
+        for attempt in range(self.max_retries + 1):
+            try:
+                resp = self.session.post(url, json=payload, timeout=self.timeout)
+                # 5xx 可重试（服务端瞬时错误），4xx 不重试
+                if 500 <= resp.status_code < 600:
+                    raise requests.exceptions.HTTPError(f"HTTP {resp.status_code}", response=resp)
+                resp.raise_for_status()
+                # 提前验证 JSON 可解析（避免调用方拿到非法 body 后报 JSONDecodeError）
+                _ = _json.loads(resp.text)
+                return resp
+            except (requests.exceptions.Timeout,
+                    requests.exceptions.ConnectionError,
+                    _json.JSONDecodeError) as e:
+                last_exc = e
+                if attempt >= self.max_retries:
+                    break
+                wait = self.retry_backoff_seconds * (2 ** attempt)
+                logger.warning(
+                    f"⚠️ TEI 请求瞬时失败（{url}，第 {attempt + 1}/{self.max_retries} 次重试，"
+                    f"{wait:.1f}s 后重试): {e}"
+                )
+                time.sleep(wait)
+            except requests.exceptions.HTTPError as e:
+                # 5xx 重试，4xx 不重试
+                status = e.response.status_code if e.response is not None else 0
+                if 500 <= status < 600 and attempt < self.max_retries:
+                    last_exc = e
+                    wait = self.retry_backoff_seconds * (2 ** attempt)
+                    logger.warning(
+                        f"⚠️ TEI 服务端 {status} 错误（{url}，第 {attempt + 1}/{self.max_retries} 次重试，"
+                        f"{wait:.1f}s 后重试)"
+                    )
+                    time.sleep(wait)
+                    continue
+                raise
+        raise last_exc
 
     # ======================== Embedding 接口 ========================
 
@@ -83,12 +145,7 @@ class TEIClient:
         Returns:
             嵌入向量（浮点数列表）
         """
-        resp = self.session.post(
-            f"{self.embed_url}/embed",
-            json={"inputs": text},
-            timeout=self.timeout,
-        )
-        resp.raise_for_status()
+        resp = self._post_with_retry(f"{self.embed_url}/embed", {"inputs": text})
         return resp.json()[0]
 
     def embed_batch(self, texts: List[str], batch_size: int = 32) -> List[List[float]]:
@@ -103,15 +160,12 @@ class TEIClient:
         Returns:
             嵌入向量列表（与输入文本一一对应）
         """
+        if not texts:
+            return []
         all_embeddings = []
         for i in range(0, len(texts), batch_size):
             batch = texts[i:i + batch_size]
-            resp = self.session.post(
-                f"{self.embed_url}/embed",
-                json={"inputs": batch},
-                timeout=self.timeout,
-            )
-            resp.raise_for_status()
+            resp = self._post_with_retry(f"{self.embed_url}/embed", {"inputs": batch})
             all_embeddings.extend(resp.json())
         return all_embeddings
 
@@ -129,16 +183,15 @@ class TEIClient:
             排序后的结果列表，每个元素包含 index 和 score，
             按 score 降序排列
         """
-        resp = self.session.post(
+        if not texts:
+            # 【修复 L19】空候选列表时直接短路返回空结果，不向 TEI 发送空
+            # texts 请求——此前依赖服务端如何处理空 texts（未定义行为，
+            # 不同 TEI 版本可能报错或返回空数组）。
+            return []
+        resp = self._post_with_retry(
             f"{self.rerank_url}/rerank",
-            json={
-                "query": query,
-                "texts": texts,
-                "return_text": return_text,
-            },
-            timeout=self.timeout,
+            {"query": query, "texts": texts, "return_text": return_text},
         )
-        resp.raise_for_status()
         results = resp.json()
         # TEI 返回的结果已按 score 降序排列
         return results
@@ -153,11 +206,21 @@ class TEIClient:
         Returns:
             分数列表（与输入文档一一对应，不排序）
         """
+        if not texts:
+            return []
         results = self.rerank(query, texts)
-        # 按 TEI 返回的 index 还原原始顺序
+        # 按 TEI 返回的 index 还原原始顺序。
+        # 【修复 L19】此前直接 `item["index"]`/`item["score"]`，若 TEI 返回
+        # 结构异常（缺字段、index 越界）会抛未加校验的 KeyError/IndexError，
+        # 错误信息不包含上下文、难以定位。现做防御性校验并抛出更明确的错误。
         scores = [0.0] * len(texts)
         for item in results:
-            scores[item["index"]] = item["score"]
+            if "index" not in item or "score" not in item:
+                raise ValueError(f"TEI /rerank 响应缺少 index/score 字段: {item}")
+            idx = item["index"]
+            if not isinstance(idx, int) or not (0 <= idx < len(texts)):
+                raise ValueError(f"TEI /rerank 响应中的 index 越界或非法: {idx}（texts 长度={len(texts)}）")
+            scores[idx] = item["score"]
         return scores
 
     # ======================== 健康检查 ========================

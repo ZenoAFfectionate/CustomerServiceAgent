@@ -139,8 +139,14 @@ def demo_2_filtering():
     print(response.text)
 
 
-def demo_3_agent_integration():
-    """示例 3：Agent 集成 - 零配置使用"""
+def demo_3_zero_config_setup():
+    """示例 3：Agent 零配置使用 DevLog（通过 Config 开关自动启用，非 RAG 集成）。
+
+    【修复 L6】函数名此前为 `demo_3_agent_integration`——本示例实际只演示
+    DevLog 工具通过 `Config(devlog_enabled=True)` 零配置接入 Agent，与
+    `rag.integration`（RAG↔Agent 集成）完全无关，容易让人误以为 RAG 已
+    接线。重命名为语义更准确的 `demo_3_zero_config_setup`。
+    """
     print("\n" + "=" * 60)
     print("示例 3：Agent 集成 - 零配置使用")
     print("=" * 60)
@@ -242,7 +248,7 @@ def demo_4_persistence():
 if __name__ == "__main__":
     demo_1_basic_operations()
     demo_2_filtering()
-    demo_3_agent_integration()
+    demo_3_zero_config_setup()
     demo_4_persistence()
 
     print("\n" + "=" * 60)

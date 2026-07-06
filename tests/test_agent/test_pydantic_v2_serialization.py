@@ -46,5 +46,7 @@ def test_tool_to_dict_uses_pydantic_v2_serialization():
             "description": "Search query",
             "required": True,
             "default": None,
+            # 【N5】ToolParameter 新增 items 字段（用于 array 类型的元素描述）
+            "items": None,
         }
     ]

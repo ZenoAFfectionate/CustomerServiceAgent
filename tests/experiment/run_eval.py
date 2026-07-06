@@ -68,19 +68,18 @@ def reset_rag_state():
     os.makedirs(data_dir, exist_ok=True)
     os.environ["RAG_DATA_DIR"] = data_dir
 
-    import rag.indexing.registry as registry_mod
-    import rag.indexing.embedder as embedder_mod
-    from rag.indexing.vector_store import reset_vector_store
-    from rag.indexing.keyword_store import reset_keyword_store
-    registry_mod._default_registry = None
-    embedder_mod._default_embedder = None
+    import rag.indexing.metadata as metadata_mod
+    import rag.indexing.embedding as embedding_mod
+    from rag.indexing.store import reset_keyword_store, reset_vector_store
+    metadata_mod._default_registry = None
+    embedding_mod._default_embedder = None
     reset_vector_store()
     reset_keyword_store()
 
 
 def ingest_kb(kb_path: str) -> dict:
     """将知识库块导入 RAG 索引（自动分批，每批 5000 条）。"""
-    from rag.indexing import indexer
+    from rag.indexing import index_builder as indexer
 
     with open(kb_path, encoding="utf-8") as f:
         blocks = json.load(f)

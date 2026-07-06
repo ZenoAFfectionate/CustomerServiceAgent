@@ -123,9 +123,17 @@ class TestParseTimeTag:
 class TestBuildBlockTree:
     """测试 HTML 结构化分块"""
 
-    def test_short_text_returns_empty(self):
-        """文本长度小于 min_node_words 时返回空列表"""
+    def test_short_text_kept_as_single_block(self):
+        """回归测试：修复审查报告 M7——文本长度小于 min_node_words 但非空时，
+        此前会直接返回空列表（短帮助页/零散小段落被静默丢弃、永不入库）。
+        现改为保留为单个整页块，仅当页面完全无内容时才返回空列表。"""
         html = '<p>短</p>'
+        blocks, raw = build_block_tree(html, max_node_words=512, min_node_words=32, zh_char=True)
+        assert len(blocks) == 1
+        assert blocks[0][0].get_text() == "短"
+
+    def test_truly_empty_html_returns_empty(self):
+        html = ""
         blocks, raw = build_block_tree(html, max_node_words=512, min_node_words=32, zh_char=True)
         assert blocks == []
 
@@ -143,6 +151,36 @@ class TestBuildBlockTree:
         blocks, raw = build_block_tree(html, max_node_words=100, min_node_words=10, zh_char=True)
         # 应至少返回一个块
         assert len(blocks) >= 1
+
+    def test_bfs_split_bare_text_block_does_not_duplicate_child_content(self):
+        """回归测试：修复审查报告 H4——BFS 拆分节点时若同时存在裸文本与已
+        单独成块的子标签，裸文本块此前会把整棵 tree（含子标签全文）也作为
+        独立块 append，导致父子块内容重复。现应只包含裸文本本身。"""
+        bare_text = "裸" * 15
+        child_text = "子块内容" * 5  # 20 字符
+        html = f"<div>{bare_text}<p>{child_text}</p><p>{child_text}2</p></div>"
+        blocks, raw = build_block_tree(html, max_node_words=30, min_node_words=10, zh_char=True)
+
+        assert len(blocks) == 3
+        texts = [tag.get_text() for tag, path, is_leaf in blocks]
+        bare_block_texts = [t for t in texts if t == bare_text]
+        assert len(bare_block_texts) == 1
+        # 裸文本块不应包含子标签的文本内容（H4 修复前会重复包含）
+        assert "子块内容" not in bare_block_texts[0]
+        # 子标签各自成块的内容应完整保留
+        assert sum(1 for t in texts if "子块内容" in t) == 2
+
+    def test_small_subtag_text_recovered_not_lost(self):
+        """回归测试：修复审查报告 M7——词数不足 min_node_words 的子标签此前
+        会被直接丢弃（既不计入裸文本也不单独成块，信息永久丢失）。现应回收
+        其文本到父节点的裸文本块中。"""
+        bare_text = "裸" * 15
+        small_child_text = "小"  # 1 个字符，远小于 min_node_words
+        child_text = "子块内容" * 5
+        html = f"<div>{bare_text}<span>{small_child_text}</span><p>{child_text}</p></div>"
+        blocks, raw = build_block_tree(html, max_node_words=30, min_node_words=10, zh_char=True)
+        all_text = "".join(tag.get_text() for tag, path, is_leaf in blocks)
+        assert small_child_text in all_text
 
 
 # ======================== process_html_file ========================

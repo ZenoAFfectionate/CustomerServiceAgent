@@ -37,6 +37,7 @@ from utils.llm_api import (
     generate_question_ChatGLM,
     generate_summary_vllm,
     generate_summary_vllm_async,
+    generate_question_vllm_async,
 )
 from utils.config import CONFIG, logger, USER_DICT_PATH
 
@@ -176,6 +177,20 @@ def build_optimal_jieba_query(
                     {"bool": {"should": synonym_queries, "minimum_should_match": 1}}
                 )
 
+    if not should_clauses:
+        # 【修复 M10】关键词为空（如空 query、纯停用词、query 重写后返回空串）时，
+        # 此前会生成 {"bool": {"should": [], "minimum_should_match": "30%"}} 这种
+        # 退化查询，其行为依赖 ES 版本——可能被解释为全库召回（污染 rerank/剪枝
+        # 预算）或零召回，均不理想。显式返回 match_none，保证行为可预测：无
+        # 有效关键词时不召回任何结果（入口 /chat、/chat/stream 已对 query 做
+        # 非空校验，此处主要覆盖 rewrite_query 返回空串或绕过 API 直调的场景）。
+        return {
+            "query": {"match_none": {}},
+            "highlight": {
+                "fields": {"*": {"pre_tags": ["<em>"], "post_tags": ["</em>"]}}
+            },
+        }
+
     return {
         "query": {"bool": {"should": should_clauses, "minimum_should_match": "30%"}},
         "highlight": {
@@ -199,15 +214,24 @@ def str_sim(a: str, b: str) -> float:
     return SequenceMatcher(None, a, b).ratio()
 
 
-def deduplicate_ranked_blocks_pal(docs: list, threshold_content: float = 0.9, threshold_page_name: float = 0.6) -> list:
+def deduplicate_ranked_blocks_pal(
+    docs: list,
+    threshold_content: float = 0.9,
+    threshold_page_name: float = 0.6,
+    threshold_content_strict: float = 0.97,
+) -> list:
     """基于 TF-IDF + cosine 相似度去重，按时间优先保留最新版本。
 
     使用迭代式 BFS（替代递归 DFS）避免大集群栈溢出。
 
     Args:
         docs: 文档块列表
-        threshold_content: 正文相似度阈值
+        threshold_content: 正文相似度阈值（配合 page_name 阈值判定"中等相似"重复）
         threshold_page_name: 页面名相似度阈值
+        threshold_content_strict: 正文近乎完全相同的严格阈值。达到此阈值时无论
+            page_name 是否相似都直接判重——修复"同一文档以不同文件名两次入库"
+            （如 `投放计划说明.md` 与 `投放计划说明(2).md`）时，因 page_name 差异
+            过大而漏判重复的问题（对应代码审查报告 M8）。
 
     Returns:
         去重后的文档块列表
@@ -220,22 +244,33 @@ def deduplicate_ranked_blocks_pal(docs: list, threshold_content: float = 0.9, th
     names = [clean_text(doc.get("page_name", "")) for doc in docs]
     times = [parse_time(doc.get("time", "")) for doc in docs]
 
-    # TF-IDF 向量化（token_pattern 包含单字符，避免短 page_name 被忽略）
-    tfidf = TfidfVectorizer(token_pattern=r"(?u)\b\w+\b").fit(texts + names)
-    sim_text = cosine_similarity(tfidf.transform(texts))
+    # 【修复 N8】此前用同一个 TfidfVectorizer 拟合 texts+names，让正文（长、
+    # 词汇量大）与文件名共用词典，正文 IDF 压低文件名特有词权重，导致
+    # sim_name 实为"字符集合相似度"而非真正的文件名语义相似度。改为对
+    # texts 和 names 分别用独立的 TfidfVectorizer 拟合，各自维护独立 IDF。
+    tfidf_text = TfidfVectorizer(token_pattern=r"(?u)\b\w+\b").fit(texts)
+    sim_text = cosine_similarity(tfidf_text.transform(texts))
 
-    # 当所有 page_name 向量为零向量时（如都为空或单字符且无特征），
-    # cosine_similarity 返回 0，此时跳过 page_name 相似度过滤
-    name_matrix = tfidf.transform(names)
-    if name_matrix.nnz == 0:
-        # 所有 page_name 均无特征，仅按正文相似度判断
+    # 文件名相似度：用独立的 vectorizer（独立 IDF），避免正文词汇干扰
+    if not any(names):
         sim_name = np.ones((n, n))
     else:
-        sim_name = cosine_similarity(name_matrix)
+        tfidf_name = TfidfVectorizer(token_pattern=r"(?u)\b\w+\b").fit(names)
+        name_matrix = tfidf_name.transform(names)
+        if name_matrix.nnz == 0:
+            sim_name = np.ones((n, n))
+        else:
+            sim_name = cosine_similarity(name_matrix)
 
-    # 上三角重复对
+    # 上三角重复对。判定为重复的两种情形：
+    #   1) 正文几乎完全相同（≥ threshold_content_strict）：无论 page_name 是否
+    #      相似都直接判重（修复 M8：同内容异文件名漏判）；
+    #   2) 正文相似度处于中等区间（[threshold_content, threshold_content_strict)）：
+    #      仍要求 page_name 也相似，避免仅措辞相近但确系不同文档的内容被误判。
     triu_idx = np.triu_indices(n, k=1)
-    sim_mask = (sim_text[triu_idx] >= threshold_content) & (sim_name[triu_idx] >= threshold_page_name)
+    strict_dup = sim_text[triu_idx] >= threshold_content_strict
+    lenient_dup = (sim_text[triu_idx] >= threshold_content) & (sim_name[triu_idx] >= threshold_page_name)
+    sim_mask = strict_dup | lenient_dup
     dup_pairs = list(zip(triu_idx[0][sim_mask], triu_idx[1][sim_mask]))
 
     # 构建重复簇：用图表示
@@ -632,18 +667,29 @@ async def generate_block_documents_async(
             summary_tasks.append((chunk_idx, text))
             chunk_idx += 1
 
-    # 批量并发生成摘要
-    logger.debug(f"{page_url} 任务准备完毕，开始分批并发生成 {len(summary_tasks)} 个摘要 ...")
+    # 批量并发生成摘要（与 gen_question=True 时并发生成 question，两者互不阻塞）
+    logger.debug(f"{page_url} 任务准备完毕，开始分批并发生成 {len(summary_tasks)} 个摘要"
+                 f"{'（含 question）' if gen_question else ''} ...")
     start = time.time()
 
     for i in range(0, len(summary_tasks), batch_size):
         batch = summary_tasks[i:i + batch_size]
-        summaries = await asyncio.gather(*[
-            generate_summary_vllm_async(text, page_url)
-            for _, text in batch
-        ])
+        gather_tasks = [generate_summary_vllm_async(text, page_url) for _, text in batch]
+        if gen_question:
+            # 【修复 M1】异步路径此前接受 gen_question 参数却完全忽略，只回填
+            # summary，question 永远为空，与同步版 `_generate_summary_and_question`
+            # 产出结构不一致。这里并发生成 question，与摘要生成共用同一批次的
+            # asyncio.gather，不额外增加往返轮次。
+            gather_tasks += [generate_question_vllm_async(text, page_url) for _, text in batch]
+
+        results = await asyncio.gather(*gather_tasks)
+        n = len(batch)
+        summaries, questions = results[:n], results[n:]
+
         for j, (meta_idx, _) in enumerate(batch):
             doc_meta[meta_idx]["summary"] = summaries[j]
+            if gen_question:
+                doc_meta[meta_idx]["question"] = questions[j]
 
     elapsed = time.time() - start
     logger.debug(f"{page_url} 所有块处理完毕，共生成 {len(doc_meta)} 条有效文档块, 耗时 {elapsed:.2f}")

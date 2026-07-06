@@ -20,25 +20,10 @@ if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
 from config.config_loader import CONFIG, logger  # noqa: E402
-
-
-def _env_or_config(key: str, config: dict, default=None, cast=str):
-    """从环境变量或 config 字典中读取值，环境变量优先。"""
-    env_val = os.environ.get(key)
-    if env_val is not None and env_val != "":
-        try:
-            if cast is bool:
-                return env_val.strip().lower() in ("1", "true", "yes", "on")
-            return cast(env_val)
-        except (ValueError, TypeError):
-            return env_val
-    val = config.get(key, default)
-    if val is not None and cast != str:
-        try:
-            return cast(val)
-        except (ValueError, TypeError):
-            pass
-    return val
+# 【修复 L3】此前本文件、`config/config_loader.py`、`process/utils/config.py`
+# 三处各自定义了一份几乎完全相同的 `_env_or_config` 实现，统一改为从
+# `config/env_utils.py` 导入唯一实现。
+from config.env_utils import env_or_config as _env_or_config  # noqa: E402
 
 
 # ======================== dev/prod 环境选择 ========================
@@ -77,7 +62,11 @@ RAG_CONFIG = {
         "milvus": _env_or_config("RAG_FUSION_WEIGHT_MILVUS", CONFIG, 0.5, float),
         "es": _env_or_config("RAG_FUSION_WEIGHT_ES", CONFIG, 0.5, float),
     },
-    "dedup_threshold_content": _env_or_config("RAG_DEDUP_THRESHOLD_CONTENT", CONFIG, 0.9, float),
+    # dedup_threshold_content 默认 1.0（即 < 1.0 判断恒为假）：默认仅做轻量的
+    # global_chunk_idx 精确去重（见 hybrid_search.deduplicate），不启用 process/
+    # 的重量级 TF-IDF 近似去重；需要跨 chunk_idx 的近似去重时可通过环境变量
+    # RAG_DEDUP_THRESHOLD_CONTENT 显式设为 <1.0 的阈值（如 0.9）开启。
+    "dedup_threshold_content": _env_or_config("RAG_DEDUP_THRESHOLD_CONTENT", CONFIG, 1.0, float),
     "dedup_threshold_page_name": _env_or_config("RAG_DEDUP_THRESHOLD_PAGE_NAME", CONFIG, 0.6, float),
 
     # -------- 分块参数（通用文档解析，process/ 专用 Block Tree 分块不受影响） --------
@@ -97,6 +86,10 @@ RAG_CONFIG = {
     "generation_max_new_tokens": _env_or_config("RAG_GEN_MAX_NEW_TOKENS", CONFIG, 512, int),
     # 抽取式兜底回答中，单条上下文摘录片段的最大字符数（超出截断并加 "..."）
     "generation_snippet_max_chars": _env_or_config("RAG_GEN_SNIPPET_MAX_CHARS", CONFIG, 200, int),
+
+    # -------- 幻觉控制（仅对 generation_backend="vllm" 生效，详见
+    # rag/generation/hallucination_control.py） --------
+    "hallucination_append_caveat": _env_or_config("RAG_HALLUCINATION_APPEND_CAVEAT", CONFIG, False, bool),
 
     # -------- 精排 --------
     # Reranker 输入文档拼接（title+summary+text）后的截断长度，避免超出模型 max_length
