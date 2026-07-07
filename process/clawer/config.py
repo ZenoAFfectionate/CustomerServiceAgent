@@ -23,10 +23,10 @@ API_ARTICLE_DETAIL = f"{BASE_HOST}/api/eschool/v2/library/article/detail"
 PAGE_SIZE = 20
 
 # 页面导航后等待内容渲染的时间（毫秒）
-RENDER_WAIT_MS = 3000
+RENDER_WAIT_MS = 2000
 
 # 每篇文章之间的间隔（秒），避免请求过快被风控
-REQUEST_INTERVAL_SEC = 1.0
+REQUEST_INTERVAL_SEC = 0.5
 
 # 请求超时（毫秒）
 NAV_TIMEOUT_MS = 30000

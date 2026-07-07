@@ -107,11 +107,13 @@ class RulesCrawler:
     Args:
         max_articles: 限制最大爬取文章数（0=不限制，调试用）。
         category_filter: 只爬取分类名模糊匹配此值的分类（空字符串=不过滤）。
+        exclude_categories: 排除顶级分类名列表（如 ["历史规则/协议"]）。
         full_crawl: 强制全量爬取，忽略本地时间戳（默认 False）。
         cleanup: 清理线上已删除但本地仍存在的文章（默认 False）。
     """
 
     def __init__(self, max_articles: int = 0, category_filter: str = "",
+                 exclude_categories: list[str] = None,
                  full_crawl: bool = False, cleanup: bool = False):
         self._playwright = None
         self._browser = None
@@ -120,6 +122,7 @@ class RulesCrawler:
         self._metadata: dict[str, dict] = {}
         self._max_articles = max_articles
         self._category_filter = category_filter
+        self._exclude_categories = exclude_categories or []
         self._full_crawl = full_crawl
         self._cleanup = cleanup
         # 统计
@@ -415,6 +418,16 @@ class RulesCrawler:
 
             # Step 3: 收集叶子节点
             leaf_nodes = self._collect_leaf_nodes(menu_tree)
+
+            # 排除指定顶级分类（如"历史规则/协议"含上万篇归档内容）
+            if self._exclude_categories:
+                before = len(leaf_nodes)
+                leaf_nodes = [
+                    (nid, path) for nid, path in leaf_nodes
+                    if not any(path[0] == ex for ex in self._exclude_categories)
+                ]
+                print(f"[crawler] 排除分类 {self._exclude_categories}: "
+                      f"{before} → {len(leaf_nodes)} 个叶子分类")
 
             if self._category_filter:
                 kw = self._category_filter

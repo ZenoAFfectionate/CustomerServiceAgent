@@ -1,7 +1,17 @@
-# 抖店规则中心爬虫（支持增量更新）
+# 抖店规则中心爬虫（支持增量更新 + 多中心映射）
 
-爬取 [抖店规则中心](https://school.jinritemai.com/doudian/web/rules) 的全部规则文档，
-按分类目录结构存储为 HTML 文件到 `process/data/抖店规则中心/`，供后续 RAG 数据处理流水线使用。
+## 中心映射表
+
+| 中心名 | API 类型 | 可爬取 | URL | 说明 |
+|--------|----------|--------|-----|------|
+| 抖店规则中心 | eschool | ✅ | school.jinritemai.com/doudian/web/rules | 内容渲染为 HTML，无需登录 |
+| 巨量千川规则中心 | support | ❌ | qianchuan.jinritemai.com/support/?pageId=229 | 正文以文件预览加载，需登录 |
+| 巨量广告规则中心 | support | ❌ | ad.oceanengine.com/support/?pageId=297 | 未登录直接报错(onAuthError) |
+| 巨量本地推帮助中心 | support | ❌ | localads.chengzijianzhan.cn/support/?pageId=305 | 正文以文件预览加载，需登录 |
+
+> **说明**：巨量千川/广告/本地推三个中心的正文内容通过文件预览组件（`general__viewer`）加载，
+> 未登录状态下预览失败（"There was an error previewing the file"）。
+> 现有 `process/data/` 下这三个中心的数据是从飞书/Lark 文档手动导出的，非从支持中心直接爬取。
 
 ## 文件结构
 
@@ -9,84 +19,59 @@
 process/clawer/               # 爬虫代码
 ├── __init__.py               # 模块说明
 ├── config.py                 # 配置常量
-├── crawler.py                # 核心爬虫逻辑（RulesCrawler 类）
-├── run.py                    # 入口脚本
+├── centers.py                # 中心映射表（CenterConfig + CENTERS 列表）
+├── crawler.py                # eschool API 爬虫（抖店规则中心）
+├── support_crawler.py        # support API 爬虫（千川/广告/本地推，需登录）
+├── run.py                    # 单中心入口（抖店规则中心）
+├── run_all.py                # 统一入口（一键爬取所有可爬取中心）
 └── README.md
 
-process/data/抖店规则中心/      # 爬取数据输出目录（运行后自动创建）
+process/data/抖店规则中心/      # 爬取数据输出目录
 ├── 规则总则/
-│   └── 抖音电商规则总则.html
 ├── 商家管理/
 │   ├── 招商入驻/
-│   │   ├── 入驻与退出/
-│   │   │   └── 招商标准及入驻规范.html
-│   │   └── 保证金管理/
-│   │       └── 保证金管理规范.html
 │   └── ...
-└── metadata.json             # 全部文章元数据（增量更新基准）
+└── metadata.json             # 元数据（增量更新基准）
 ```
-
-## 增量更新机制
-
-| 场景 | 行为 |
-|------|------|
-| 首次运行 | 全量爬取所有文章，保存 metadata.json |
-| 文章未变化（update_at 相同） | **跳过**，不发起页面请求 |
-| 文章已更新（update_at 更新） | **重新爬取**，替换旧文件 |
-| 新增文章 | **爬取并保存** |
-| 文章已删除（线上不存在） | 默认保留；`--cleanup` 时删除 |
-
-比对依据：API 返回的 `update_at` 时间戳。未变化的文章不会导航到详情页，大幅减少爬取时间。
 
 ## 用法
 
 ```bash
 cd CustomerServiceAgent
 
-# 增量更新（默认行为，只爬取有变化的文章）
+# 统一爬取（自动跳过不可爬取的中心）
+PYTHONPATH=process python -m process.clawer.run_all
+
+# 只爬取抖店规则中心
 PYTHONPATH=process python -m process.clawer.run
 
-# 强制全量爬取（忽略本地时间戳，重新爬取所有文章）
+# 强制全量爬取
 PYTHONPATH=process python -m process.clawer.run --full
 
-# 增量更新 + 清理已删除的文章
+# 增量更新 + 清理已删除
 PYTHONPATH=process python -m process.clawer.run --cleanup
 
-# 调试：限制爬取数量
+# 调试：限制数量
 PYTHONPATH=process python -m process.clawer.run --max-articles 30
-
-# 调试：只爬取指定分类
-PYTHONPATH=process python -m process.clawer.run --category "商家管理"
-
-# 调试：显示浏览器窗口
-PYTHONPATH=process python -m process.clawer.run --no-headless
 ```
 
-## 输出格式
+## 增量更新机制
 
-每篇文章保存为单个 HTML 文件：
+| 场景 | 行为 |
+|------|------|
+| 首次运行 | 全量爬取所有文章 |
+| 文章未变化 | **跳过**（不打开浏览器页面） |
+| 文章已更新 | **重新爬取**并替换 |
+| 新增文章 | **爬取并保存** |
+| 文章已删除 | 默认保留；`--cleanup` 时删除 |
 
-```html
-<time>2026-06-30 14:20:23</time>
-<div class="ace-line heading-h1 ...">...</div>
-<div class="ace-line ...">...</div>
-```
+比对依据：API 返回的 `update_at` 时间戳。未变化的文章不导航到详情页，大幅减少爬取时间。
 
-`metadata.json` 记录每篇文章的完整元数据：
+## 抖店规则中心文章分布
 
-```json
-{
-  "article_id": "aHVWKjDmNiUv",
-  "title": "品牌限售细则",
-  "url": "https://school.jinritemai.com/doudian/web/article/aHVWKjDmNiUv",
-  "category": "商家管理/招商入驻/入驻与退出",
-  "category_path": ["商家管理", "招商入驻", "入驻与退出"],
-  "update_at": 1782800423,
-  "update_time": "2026-06-30 14:20:23",
-  "create_time": "2022-06-07 15:12:00",
-  "view_count": 1156159,
-  "extra_tags": ["更新"],
-  "file_path": "商家管理/招商入驻/入驻与退出/品牌限售细则.html",
-  "crawled_at": "2026-07-07 11:30:00"
-}
-```
+| 类别 | 文章数 | 说明 |
+|------|--------|------|
+| 核心规则分类 | 611 | 规则总则、商家管理、创作者管理等 11 个分类 |
+| 辅助内容 | 909 | 公告专区、规则动态、协议专区等 |
+| 历史归档（已排除） | 11,575 | 历史规则/协议（`--exclude` 跳过） |
+| **本次爬取目标** | **1,520** | 排除历史归档后的全部内容 |
