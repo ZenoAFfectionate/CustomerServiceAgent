@@ -125,12 +125,87 @@ def rebuild_html(blocks: Sequence[Tag]) -> str:
     return "\n".join(str(b) for b in blocks)
 
 
+def rebuild_html_with_domains(
+    blocks: Sequence[Tag],
+    paths: Sequence[List[str]],
+) -> str:
+    """从保留的块标签重建 HTML，保留 heading domain 层次结构。
+
+    对标论文 HtmlRAG 的核心观点：保留 HTML 层次结构能为 LLM 提供更丰富的
+    上下文信息。将同一 heading domain 下的连续块包装在 <div class="hN_domain">
+    中，使 LLM 能理解块之间的从属关系。
+
+    Args:
+        blocks: 保留的块标签列表
+        paths:  每个块的路径列表（如 ["h1_domain", "h2_domain", "p"]）
+
+    Returns:
+        保留层次结构的 HTML 字符串
+    """
+    if not blocks:
+        return ""
+
+    # 提取每个块的顶级 domain（如 "h1_domain" / "h2_domain" / "isolated_domain"）
+    top_domains = []
+    for path in paths:
+        if path:
+            # 找第一个以 _domain 结尾的路径段
+            domain = next((p for p in path if p.endswith("_domain")), "")
+            top_domains.append(domain)
+        else:
+            top_domains.append("")
+
+    # 按 domain 分组连续的块
+    result_parts = []
+    current_domain = top_domains[0] if top_domains else ""
+    current_group = []
+
+    for i, (block, domain) in enumerate(zip(blocks, top_domains)):
+        if domain != current_domain and current_group:
+            # 提交当前组
+            result_parts.append(_wrap_domain_group(current_group, current_domain))
+            current_group = []
+            current_domain = domain
+        current_group.append(block)
+
+    # 提交最后一组
+    if current_group:
+        result_parts.append(_wrap_domain_group(current_group, current_domain))
+
+    return "\n".join(result_parts)
+
+
+def _wrap_domain_group(blocks: List[Tag], domain: str) -> str:
+    """将一组块包装在 domain div 中。"""
+    inner = "\n".join(str(b) for b in blocks)
+    if domain and domain != "isolated_domain":
+        return f'<div class="{domain}">\n{inner}\n</div>'
+    return inner
+
+
 # ======================== 内部工具 ========================
 
 def _tag_word_count(tag: Tag, zh_char: bool) -> int:
     """计算块的词数（zh_char=True 时按字符数，适配中文）。"""
     text = tag.get_text()
     return len(text) if zh_char else len(text.split())
+
+
+def _extract_heading_context(path: List[str]) -> str:
+    """从块路径中提取标题上下文文本。
+
+    例如路径 ["h1_domain", "h2_domain", "p"] → "h1 h2"，
+    或路径 ["h1_section"] → "h1"，
+    用于在打分时为块提供所属章节的上下文信息。
+    """
+    contexts = []
+    for segment in path:
+        # 匹配 hN_domain 或 hN_section 格式
+        if segment.endswith("_domain") and segment.startswith("h"):
+            contexts.append(segment.replace("_domain", ""))
+        elif segment.endswith("_section") and segment.startswith("h"):
+            contexts.append(segment.replace("_section", ""))
+    return " ".join(contexts)
 
 
 def _prune_html_by_scores(
@@ -150,6 +225,9 @@ def _prune_html_by_scores(
         stage_name:     日志用阶段名。
 
     打分失败时优雅降级为「不剪枝」（重建全部块）。
+
+    改进：在打分时为每个块附加标题上下文（如"h1 h2"），使打分器
+    能感知块所属的章节层级，提升相关性判断的准确性。
     """
     block_tree, _ = build_block_tree(
         html, max_node_words=max_node_words,
@@ -161,7 +239,16 @@ def _prune_html_by_scores(
         return html
 
     blocks = [item[0] for item in block_tree]
-    texts = [t.get_text() for t in blocks]
+    paths = [item[1] for item in block_tree]
+    # 附加标题上下文到块文本，提升打分准确性
+    texts = []
+    for block, path in zip(blocks, paths):
+        block_text = block.get_text()
+        heading_ctx = _extract_heading_context(path)
+        if heading_ctx:
+            texts.append(f"[{heading_ctx}] {block_text}")
+        else:
+            texts.append(block_text)
     word_counts = [_tag_word_count(t, zh_char) for t in blocks]
 
     try:
@@ -179,7 +266,9 @@ def _prune_html_by_scores(
         f"[{stage_name}] 原始 {len(blocks)} 块 → 保留 {len(keep)} 块"
         f"（预算 {max_context_words} 词）"
     )
-    return rebuild_html([blocks[i] for i in keep])
+    kept_blocks = [blocks[i] for i in keep]
+    kept_paths = [paths[i] for i in keep]
+    return rebuild_html_with_domains(kept_blocks, kept_paths)
 
 
 # ======================== Stage 1：嵌入粗剪 ========================

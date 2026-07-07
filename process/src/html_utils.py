@@ -46,6 +46,57 @@ _UI_NOISE_RE = re.compile(
 # 模板残留文本模式
 _TEMPLATE_TEXT_RE = re.compile(r'\{\{[^}]*PLACEHOLDER[^}]*\}\}', re.IGNORECASE)
 
+# ======================== 飞书文档导出特有模式 ========================
+# 飞书 HTML 导出包含大量 UI 噪声和冗余包装层，需在通用清洗前预处理。
+
+# 需完全移除的 class 前缀（元素及其子元素一起删除）
+# 注意：仅包含纯 UI 噪声元素（不含实际文本内容）
+_FEISHU_REMOVE_PREFIXES = (
+    "fold-wrapper", "fold-handler", "fold-block-id-",
+    "bear-virtual-renderUnit-placeholder",
+    "docx-block-zero-space",
+    "callout-emoji-container", "callout-block-emoji",
+    "emoji-mart-",
+    "bullet-dot-style",
+    "grid-column-percent",
+    "column-gap-inner",
+    "svg-wrapper",
+    "heading-order",
+)
+# 需完全移除的精确 class
+_FEISHU_REMOVE_EXACT = frozenset({
+    "orderUnedit", "bulletUnedit",
+})
+
+# 需 unwrap 的 class 前缀（保留子元素，仅移除包装层）
+# 注意：block-comment / callout-block-comment / local-comment-all-third-party
+# 是 callout 内容的包装层（非噪声），必须 unwrap 而非 decompose
+_FEISHU_UNWRAP_PREFIXES = (
+    "zone-container", "text-editor", "text-block-wrapper",
+    "text-block", "heading-block", "heading-content",
+    "heading-children", "list-wrapper", "list-content",
+    "list-children", "render-unit-wrapper",
+    "grid-block", "grid-column-block", "grid-render-unit",
+    "grid-horizontal", "column-gap",
+    "callout-block", "callout-render-unit",
+    "docx-callout-block-container", "docx-callout-block-inner-container",
+    "callout-block-comment",
+    "block-comment", "local-comment-all-third-party",
+    "quote-container-block", "quote-container-block-children",
+    "quote-container-render-unit",
+    "list-style-group-", "list-align-",
+    "textHighlight", "text-highlight-background",
+    "text-comment", "comment-id-",
+    "hide-placeholder", "non-empty",
+    "j-grid-block", "j-column-gap",
+)
+# 需 unwrap 的精确 class
+_FEISHU_UNWRAP_EXACT = frozenset({
+    "heading", "bullet", "list", "ace-line",
+    "text-block", "grid-column-block",
+    "render-unit-wrapper",
+})
+
 
 # ======================== <time> 标签 ========================
 
@@ -70,11 +121,120 @@ def parse_time_tag(html: str) -> Tuple[str, str]:
     return "", html
 
 
+# ======================== 飞书噪声预处理 ========================
+
+def _clean_feishu_noise(soup: BeautifulSoup) -> None:
+    """预处理飞书文档导出的 HTML：移除 UI 噪声并展平冗余包装层。
+
+    飞书导出的 HTML 具有极深的嵌套结构（heading → heading-block → heading
+    → heading-content → zone-container → text-editor → ace-line → span），
+    并包含大量 UI 噪声（折叠按钮、占位符、零宽字符、emoji 容器、SVG 图标等）。
+    本函数在通用清洗之前先行处理这些飞书特有模式，使后续清洗更高效。
+
+    处理顺序：
+        1. 移除噪声元素（fold-wrapper / placeholder / emoji / SVG / bullet-dot 等）
+        2. 移除零宽字符元素（data-enter / data-zero-space）
+        3. 展平飞书包装层（zone-container / text-editor / heading-block 等）
+        4. 展平仅含文本的 span 标签
+    """
+    # 飞书 data-block-type 值集合：这些元素包含实际内容，不可被 decompose
+    _content_block_types = frozenset({
+        "text", "bullet", "ordered", "callout", "quote_container",
+        "heading1", "heading2", "heading3", "heading4", "heading5", "heading6",
+    })
+
+    # --- 1. 移除噪声元素 ---
+    for tag in list(soup.find_all(True)):
+        # 安全检查：已被 decompose 的标签 attrs 为 None，跳过
+        if tag.attrs is None:
+            continue
+        # 安全检查：含 data-block-type 的元素是内容块，绝不 decompose
+        block_type = tag.get("data-block-type")
+        if block_type and block_type in _content_block_types:
+            continue
+
+        classes = tag.get("class", [])
+        if isinstance(classes, str):
+            classes = classes.split()
+
+        should_remove = False
+        for cls in classes:
+            if any(cls.startswith(p) for p in _FEISHU_REMOVE_PREFIXES):
+                should_remove = True
+                break
+            if cls in _FEISHU_REMOVE_EXACT:
+                should_remove = True
+                break
+
+        if should_remove:
+            tag.decompose()
+
+    # --- 2. 移除零宽字符与控制元素 ---
+    for tag in soup.find_all(attrs={"data-enter": "true"}):
+        tag.decompose()
+    for tag in soup.find_all(attrs={"data-zero-space": "true"}):
+        tag.decompose()
+
+    # 移除 SVG（飞书大量使用 SVG 做折叠箭头图标）
+    for tag in soup.find_all("svg"):
+        tag.decompose()
+
+    # --- 3. 展平飞书包装层（多次迭代处理深层嵌套） ---
+    for _ in range(5):
+        unwrapped = False
+        for tag in list(soup.find_all(True)):
+            if tag.name in _TABLE_PROTECTED_TAGS:
+                continue
+            # 安全检查：已被 decompose 的标签 attrs 为 None，跳过
+            if tag.attrs is None:
+                continue
+            classes = tag.get("class", [])
+            if isinstance(classes, str):
+                classes = classes.split()
+
+            should_unwrap = False
+            for cls in classes:
+                if any(cls.startswith(p) for p in _FEISHU_UNWRAP_PREFIXES):
+                    should_unwrap = True
+                    break
+                if cls in _FEISHU_UNWRAP_EXACT:
+                    should_unwrap = True
+                    break
+
+            if should_unwrap:
+                tag.replace_with_children()
+                unwrapped = True
+
+        if not unwrapped:
+            break
+
+    # --- 4. 展平飞书 span 标签 ---
+    # 飞书用 <span data-leaf="true" data-string="true"> 包装每个文本片段，
+    # 属性被清除后变为无语义的 <span>，应展平以减少嵌套。
+    # 仅展平飞书特有的 span（有 data-leaf 或 data-string 属性），
+    # 不影响普通 HTML 中的 <span>（如 UI 噪声 span 需保留以供 _is_ui_noise 检测）。
+    for tag in list(soup.find_all("span")):
+        # 安全检查：已被 decompose 的标签 attrs 为 None，跳过
+        if tag.attrs is None:
+            continue
+        # 表格单元格内的 span 保留（可能影响表格解析）
+        if tag.find_parent(_TABLE_PROTECTED_TAGS):
+            continue
+        # 仅展平飞书特有的 span（data-leaf 或 data-string）
+        if not (tag.get("data-leaf") or tag.get("data-string")):
+            continue
+        child_tags = [c for c in tag.contents if isinstance(c, Tag)]
+        # 仅展平不含子标签的纯文本 span
+        if not child_tags:
+            tag.replace_with_children()
+
+
 # ======================== HTML 清洗 ========================
 
 def simplify_html_keep_table(soup: BeautifulSoup, keep_attr: bool = False) -> str:
     """保留表格结构的 HTML 简化。
 
+    - 预处理飞书特有噪声（fold-wrapper / placeholder / 零宽字符等）
     - 移除噪声标签（script/style/svg/input/button/nav/aside 等）
     - 移除隐藏元素（style="display:none" 或 class 含 hidden）
     - 移除模板残留文本（{{PLACEHOLDER}}）
@@ -83,6 +243,9 @@ def simplify_html_keep_table(soup: BeautifulSoup, keep_attr: bool = False) -> st
     - 移除空标签和 HTML 注释
     - 合并冗余包装标签
     """
+    # 预处理飞书文档导出的特有噪声与冗余包装层
+    _clean_feishu_noise(soup)
+
     # 移除噪声标签（script, style, svg, input, button, nav, aside 等）
     for tag in soup(list(_NOISE_TAGS)):
         tag.decompose()
@@ -225,6 +388,52 @@ def _unwrap_redundant_wrappers(soup: BeautifulSoup) -> None:
         tag.replace_with_children()
 
 
+def _convert_semantic_blocks(soup: BeautifulSoup) -> None:
+    """将飞书 data-block-type 属性转换为标准 HTML 语义标签。
+
+    转换映射：
+        - data-block-type="text"            → <p>
+        - data-block-type="bullet"          → <li>
+        - data-block-type="ordered"         → <li>
+        - data-block-type="callout"         → unwrap（保留子元素）
+        - data-block-type="quote_container" → <blockquote>
+        - data-block-type="grid"           → unwrap（保留子元素）
+        - data-block-type="grid_column"    → unwrap（保留子元素）
+
+    heading 类型由 _convert_headings 单独处理（转 <h1>~<h6>）。
+    """
+    # text → <p>
+    for tag in soup.find_all(attrs={"data-block-type": "text"}):
+        new_tag = soup.new_tag("p")
+        for child in list(tag.contents):
+            new_tag.append(child.extract())
+        tag.replace_with(new_tag)
+
+    # bullet / ordered → <li>
+    for block_type in ("bullet", "ordered"):
+        for tag in soup.find_all(attrs={"data-block-type": block_type}):
+            new_tag = soup.new_tag("li")
+            for child in list(tag.contents):
+                new_tag.append(child.extract())
+            tag.replace_with(new_tag)
+
+    # callout → unwrap（callout 仅是提示框包装，内容有意义）
+    for tag in soup.find_all(attrs={"data-block-type": "callout"}):
+        tag.replace_with_children()
+
+    # quote_container → <blockquote>
+    for tag in soup.find_all(attrs={"data-block-type": "quote_container"}):
+        new_tag = soup.new_tag("blockquote")
+        for child in list(tag.contents):
+            new_tag.append(child.extract())
+        tag.replace_with(new_tag)
+
+    # grid / grid_column → unwrap（布局容器，无语义价值）
+    for block_type in ("grid", "grid_column"):
+        for tag in soup.find_all(attrs={"data-block-type": block_type}):
+            tag.replace_with_children()
+
+
 def warp_domains(html: str) -> str:
     """将 HTML 中的 <hX> 和 <table> 标签进行语义包装。
 
@@ -233,6 +442,9 @@ def warp_domains(html: str) -> str:
     3. 对 <table> 外包一层 <div class="table_domain">
     """
     soup = BeautifulSoup(html, "html.parser")
+
+    # Step 0: 转换飞书语义块（text→p, bullet→li, callout→unwrap 等）
+    _convert_semantic_blocks(soup)
 
     # Step 1: 转换 heading 标签
     _convert_headings(soup)
@@ -247,7 +459,10 @@ def warp_domains(html: str) -> str:
 
 
 def _convert_headings(soup: BeautifulSoup) -> None:
-    """将 data-block-type="headingN" 转换为 <hN>。"""
+    """将 data-block-type="headingN" 转换为 <hN>。
+
+    转换后清除子元素中残留的 data-block-type，避免嵌套标题重复转换。
+    """
     block_map = {f"heading{i}": f"h{i}" for i in range(1, 7)}
     for tag in soup.find_all(attrs={"data-block-type": True}):
         block_type = tag.get("data-block-type")
@@ -256,6 +471,9 @@ def _convert_headings(soup: BeautifulSoup) -> None:
             for child in list(tag.contents):
                 new_tag.append(child.extract())
             tag.replace_with(new_tag)
+            # 清除子元素中残留的 data-block-type，避免嵌套重复转换
+            for descendant in new_tag.find_all(attrs={"data-block-type": True}):
+                descendant.attrs.pop("data-block-type", None)
 
 
 def _get_heading_level(tag_name: str):
@@ -603,8 +821,8 @@ def build_block_tree(
 
             for child in tree.contents:
                 if isinstance(child, Tag):
-                    # 表格/表体作为整体保留
-                    if child.name in ("table", "tbody"):
+                    # 表格/表体/列表项作为整体保留
+                    if child.name in ("table", "tbody", "li"):
                         if _count_words(child, zh_char) >= min_node_words:
                             target_trees.append((child, path + [child.name], True))
                         else:
