@@ -4,11 +4,11 @@
 
 用法：
     cd CustomerServiceAgent
-    PYTHONPATH=process python -m process.clawer.run_all              # 增量更新全部可爬取中心
-    PYTHONPATH=process python -m process.clawer.run_all --full       # 强制全量爬取
-    PYTHONPATH=process python -m process.clawer.run_all --cleanup    # 增量+清理已删除
-    PYTHONPATH=process python -m process.clawer.run_all --only 抖店规则中心  # 只爬指定中心
-    PYTHONPATH=process python -m process.clawer.run_all --max-articles 10    # 调试用
+    PYTHONPATH=process python -m process.crawler.run_all              # 增量更新全部可爬取中心
+    PYTHONPATH=process python -m process.crawler.run_all --full       # 强制全量爬取
+    PYTHONPATH=process python -m process.crawler.run_all --cleanup    # 增量+清理已删除
+    PYTHONPATH=process python -m process.crawler.run_all --only 抖店规则中心  # 只爬指定中心
+    PYTHONPATH=process python -m process.crawler.run_all --max-articles 10    # 调试用
 
 注意：
     巨量千川/巨量广告/巨量本地推 三个中心的正文内容需要登录后才能访问（文件预览机制），
@@ -21,10 +21,10 @@ import argparse
 if __name__ == "__main__" and __package__ is None:
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from clawer import config as cfg
-from clawer.centers import CENTERS, list_centers, list_crawlable_centers
-from clawer.crawler import RulesCrawler
-from clawer.support_crawler import SupportCrawler
+from crawler import config as cfg
+from crawler.centers import CENTERS, list_centers, list_crawlable_centers
+from crawler.crawler import RulesCrawler
+from crawler.support_crawler import SupportCrawler
 
 
 def crawl_center(center, max_articles=0, full_crawl=False, cleanup=False):

@@ -6,7 +6,7 @@
 
     - "upload":         用户通过 API 上传的单个文件（bytes）
     - "process_blocks": `process/` 模块产出的知识块 JSON（list[dict]）
-    - "directory":      本地目录下批量扫描的知识块 JSON 文件（如 `process/dataset/html_cleaned_block/`）
+    - "directory":      本地目录下批量扫描的知识块 JSON 文件（如 `process/data/数据集名_blocked/`）
 
 新增数据来源（如数据库表、网页爬虫）时，只需新增一个 `iter_xxx_source()`
 函数，不影响已有来源的处理逻辑。

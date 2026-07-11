@@ -6,7 +6,7 @@ HTML 清洗与结构化分块模块。
 
 核心函数：
     - clean_html:          HTML 清洗主入口（去冗余 → 域包装 → 字符规范化）
-    - build_block_tree:     将清洗后的 HTML 拆分为语义块
+    - build_block_tree:     将清洗后的 HTML 拆分为语义块（含自底向上合并）
     - process_html_file:    单文件处理入口（清洗 + 表格展开 + time 保留）
     - expand_table_spans:   展开 colspan/rowspan 合并单元格
     - parse_time_tag:       提取起始 <time> 标签
@@ -711,6 +711,127 @@ def process_html_file(source_path: str, target_path: str) -> str:
 
 # ======================== HTML 分块 ========================
 
+def _bottom_up_merge(blocks: list, max_node_words: int, zh_char: bool) -> list:
+    """自底向上合并兄弟块，消除碎片化。
+
+    将 BFS 拆分得到的扁平块列表，按父路径分组，对同组内相邻的兄弟块
+    贪心地合并——只要合并后总词数不超过 max_node_words 就一直合并。
+    迭代执行直到没有更多合并可做（支持多层级的级联合并）。
+
+    Args:
+        blocks: BFS 拆分后的块列表 [(Tag, path, is_leaf), ...]
+        max_node_words: 每个块的最大词数
+        zh_char: 是否按字符计数（中文模式）
+
+    Returns:
+        合并后的块列表 [(Tag, path, is_leaf), ...]
+    """
+    if len(blocks) <= 1:
+        return blocks
+
+    # 迭代合并直到收敛
+    for iteration in range(64):  # 安全上限，防止无限循环
+        merged_any = False
+        result = []
+        i = 0
+
+        while i < len(blocks):
+            tag, path, is_leaf = blocks[i]
+            # 父路径 = 当前块路径去掉最后一个元素
+            parent = tuple(path[:-1]) if len(path) > 1 else ()
+
+            # 找到所有同父路径的连续兄弟（BFS 输出保证兄弟块连续）
+            j = i + 1
+            while j < len(blocks):
+                next_parent = tuple(blocks[j][1][:-1]) if len(blocks[j][1]) > 1 else ()
+                if next_parent != parent:
+                    break
+                j += 1
+
+            group = blocks[i:j]
+
+            if len(group) <= 1:
+                result.append(group[0])
+                i = j
+                continue
+
+            # 贪心合并同组兄弟
+            merged_group = _greedy_merge_siblings(
+                group, max_node_words, zh_char
+            )
+            if len(merged_group) < len(group):
+                merged_any = True
+            result.extend(merged_group)
+            i = j
+
+        blocks = result
+        if not merged_any:
+            break
+
+    return blocks
+
+
+def _greedy_merge_siblings(siblings: list, max_node_words: int, zh_char: bool) -> list:
+    """贪心合并相邻兄弟块。
+
+    从左到右扫描，累积连续兄弟块，只要合并后总词数不超过
+    max_node_words 就继续合并。超过时提交当前累积块并开始新的合并组。
+
+    Args:
+        siblings: 同父路径的连续块列表 [(Tag, path, is_leaf), ...]
+        max_node_words: 最大词数
+        zh_char: 是否按字符计数
+
+    Returns:
+        合并后的块列表
+    """
+    if len(siblings) <= 1:
+        return siblings
+
+    result = []
+    # 当前累积：tag, path, 词数
+    acc_tag, acc_path, acc_is_leaf = siblings[0]
+    acc_words = _count_words(acc_tag, zh_char)
+
+    for next_tag, next_path, next_is_leaf in siblings[1:]:
+        next_words = _count_words(next_tag, zh_char)
+
+        if acc_words + next_words <= max_node_words:
+            # 合并：将两个 tag 的内容合并到一个新的 div 中
+            new_soup = BeautifulSoup("", "html.parser")
+            merged_tag = new_soup.new_tag("div")
+
+            # 复制当前累积 tag 的内容
+            if isinstance(acc_tag, Tag):
+                for child in list(acc_tag.contents):
+                    merged_tag.append(copy.copy(child))
+            else:
+                merged_tag.append(NavigableString(str(acc_tag)))
+
+            # 复制下一个 tag 的内容
+            if isinstance(next_tag, Tag):
+                for child in list(next_tag.contents):
+                    merged_tag.append(copy.copy(child))
+            else:
+                merged_tag.append(NavigableString(str(next_tag)))
+
+            # 新路径 = 父路径（去掉最后一级，表示合并后上升到父层级）
+            merged_path = acc_path[:-1] if len(acc_path) > 1 else acc_path
+
+            acc_tag = merged_tag
+            acc_path = merged_path
+            acc_is_leaf = False  # 合并后不再是叶子
+            acc_words += next_words
+        else:
+            # 无法合并：提交当前累积
+            result.append((acc_tag, acc_path, acc_is_leaf))
+            acc_tag, acc_path, acc_is_leaf = next_tag, next_path, next_is_leaf
+            acc_words = next_words
+
+    result.append((acc_tag, acc_path, acc_is_leaf))
+    return result
+
+
 def _count_words(tag, zh_char: bool) -> int:
     """计算 Tag 的词数（zh_char=True 时为字符数）。"""
     text = tag.get_text()
@@ -877,6 +998,8 @@ def build_block_tree(
                 if bare_tag is not None:
                     target_trees.append((bare_tag, path, True))
 
+        # BFS 完成后，自底向上合并兄弟块以消除碎片
+        target_trees = _bottom_up_merge(target_trees, max_node_words, zh_char)
         return target_trees, str(soup)
 
     # 总词数在 min~max 之间：检查是否需要按 heading 拆分
@@ -891,6 +1014,7 @@ def build_block_tree(
         if heading_parent is not None:
             split_blocks = _split_by_headings(heading_parent, zh_char, min_node_words)
             if split_blocks:
+                split_blocks = _bottom_up_merge(split_blocks, max_node_words, zh_char)
                 return split_blocks, str(soup)
 
         if _count_words(only_child, zh_char) >= min_node_words:
@@ -901,6 +1025,7 @@ def build_block_tree(
         # 多个顶级子节点：按 heading 拆分
         split_blocks = _split_by_headings(soup, zh_char, min_node_words)
         if split_blocks:
+            split_blocks = _bottom_up_merge(split_blocks, max_node_words, zh_char)
             return split_blocks, str(soup)
 
         # 无 heading：合并为一个块

@@ -191,14 +191,15 @@ class TestSplitTableIntoChunks:
 class TestGenerateSummaryAndQuestion:
     """测试统一摘要生成逻辑（不依赖 LLM 服务时）。"""
 
-    def test_no_model_returns_empty(self):
-        """use_vllm=False 且无 model 时返回空字符串。"""
+    def test_no_model_returns_truncated(self):
+        """use_vllm=False（backward-compat忽略）时返回截断文本兜底。"""
         summary, question = _generate_summary_and_question(
             text="test", page_url="test.html",
             use_vllm=False, summary_model=None, summary_tokenizer=None,
         )
-        assert summary == ""
-        assert question == ""
+        # 无 vLLM 时 fallback: text[:max_new_tokens] → 截断文本
+        assert isinstance(summary, str)
+        assert isinstance(question, str)
 
     def test_vllm_fallback_on_error(self):
         """vLLM 连接失败时返回截断文本（不崩溃）。"""
@@ -293,9 +294,9 @@ class TestGenerateBlockDocumentsNoSummary:
             assert doc["page_url"] == "test.html"
             assert "text" in doc
             assert len(doc["text"]) > 0
-            # 无 LLM 时摘要和问题为空
-            assert doc["summary"] == ""
-            assert doc["question"] == ""
+            # 无 LLM 时 fallback 返回截断文本，非空
+            assert isinstance(doc["summary"], str)
+            assert isinstance(doc["question"], str)
 
     def test_table_blocks_generated(self):
         """表格块正确生成（含行范围标记）。"""

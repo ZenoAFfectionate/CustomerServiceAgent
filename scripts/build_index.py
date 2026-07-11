@@ -11,7 +11,7 @@
 都先删后插"进一步减少了不必要的向量化开销。
 
 用法：
-    python scripts/build_index.py [--source-dir process/dataset/html_cleaned_block]
+    python scripts/build_index.py [--source-dir process/data]
     python scripts/build_index.py --force        # 忽略内容哈希，强制全部重新导入
     python scripts/build_index.py --dry-run       # 仅预览将要执行的变更，不实际写入
 
@@ -30,8 +30,8 @@ sys.path.insert(0, _PROJECT_ROOT)
 def main():
     parser = argparse.ArgumentParser(description="构建 RAG 索引（写入向量库 + 关键词库）")
     parser.add_argument(
-        "--source-dir", default=os.path.join("process", "dataset", "html_cleaned_block"),
-        help="process/ 输出的知识块 JSON 所在目录（递归扫描 *.json）",
+        "--source-dir", default=os.path.join("process", "data"),
+        help="process/ 输出的知识块 JSON 所在目录（递归扫描 *_blocked.json）",
     )
     parser.add_argument("--force", action="store_true", help="忽略内容哈希比对，强制重新导入全部文件")
     parser.add_argument("--dry-run", action="store_true", help="仅预览将要执行的变更计划，不实际写入索引")

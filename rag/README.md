@@ -170,13 +170,13 @@ print(result["citations"])
 from rag.knowledge_base import corpus_management, update_sync
 
 # 导入 process/ 输出的知识块（含质量检查 + 版本记录）
-meta = corpus_management.ingest_blocks(json.load(open("process/dataset/html_cleaned_block/xxx.json")))
+meta = corpus_management.ingest_blocks(json.load(open("process/data/数据集名_blocked/xxx.json")))
 
 # 导入普通文档（自动分块）
 meta = corpus_management.ingest_upload("faq.txt", open("faq.txt", "rb").read())
 
 # 目录级增量同步：内容未变化的文件自动跳过，避免重复索引
-report = update_sync.sync_directory("process/dataset/html_cleaned_block")
+report = update_sync.sync_directory("process/data/数据集名_blocked")
 print(report["ingested"], report["skipped_unchanged"])
 ```
 

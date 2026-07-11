@@ -16,7 +16,7 @@
 ## 文件结构
 
 ```
-process/clawer/               # 爬虫代码
+process/crawler/               # 爬虫代码
 ├── __init__.py               # 模块说明
 ├── config.py                 # 配置常量
 ├── centers.py                # 中心映射表（CenterConfig + CENTERS 列表）
@@ -40,19 +40,19 @@ process/data/抖店规则中心/      # 爬取数据输出目录
 cd CustomerServiceAgent
 
 # 统一爬取（自动跳过不可爬取的中心）
-PYTHONPATH=process python -m process.clawer.run_all
+PYTHONPATH=process python -m process.crawler.run_all
 
 # 只爬取抖店规则中心
-PYTHONPATH=process python -m process.clawer.run
+PYTHONPATH=process python -m process.crawler.run
 
 # 强制全量爬取
-PYTHONPATH=process python -m process.clawer.run --full
+PYTHONPATH=process python -m process.crawler.run --full
 
 # 增量更新 + 清理已删除
-PYTHONPATH=process python -m process.clawer.run --cleanup
+PYTHONPATH=process python -m process.crawler.run --cleanup
 
 # 调试：限制数量
-PYTHONPATH=process python -m process.clawer.run --max-articles 30
+PYTHONPATH=process python -m process.crawler.run --max-articles 30
 ```
 
 ## 增量更新机制

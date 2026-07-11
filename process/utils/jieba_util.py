@@ -136,7 +136,7 @@ if __name__ == "__main__":
     from utils.config import DATA_DIR
 
     parser = argparse.ArgumentParser(description="构建 jieba 自定义词典")
-    parser.add_argument("--html-dir", type=str, default="dataset/html_source",
+    parser.add_argument("--html-dir", type=str, default="process/data",
                         help="HTML 源文件目录（用于提取高频短语）")
     parser.add_argument("--output", type=str, default=os.path.join(DATA_DIR, "user_dict.txt"),
                         help="输出词典路径（默认与 config.USER_DICT_PATH 一致）")

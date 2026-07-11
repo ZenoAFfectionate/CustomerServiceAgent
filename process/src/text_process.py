@@ -33,8 +33,6 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 
 from utils.llm_api import (
-    generate_summary_ChatGLM,
-    generate_question_ChatGLM,
     generate_summary_vllm,
     generate_summary_vllm_async,
     generate_question_vllm_async,
@@ -345,23 +343,16 @@ def _count_words_in_text(text: str) -> int:
 def _generate_summary_and_question(
     text: str,
     page_url: str,
-    use_vllm: bool,
-    summary_model=None,
-    summary_tokenizer=None,
     gen_question: bool = False,
+    **kwargs,  # backward compat: use_vllm, summary_model, summary_tokenizer (ignored)
 ) -> tuple:
-    """统一的摘要 + 问句生成逻辑，消除三重重复代码。
+    """生成摘要（vLLM），可选生成代表性问句。
 
     Returns:
         (summary, question) 字符串元组
     """
-    summary, question = "", ""
-    if use_vllm:
-        summary = generate_summary_vllm(text, page_url)
-    elif summary_model and summary_tokenizer:
-        summary = generate_summary_ChatGLM(text, page_url, summary_model, summary_tokenizer)
-        if gen_question:
-            question = generate_question_ChatGLM(text, page_url, summary_model, summary_tokenizer)
+    summary = generate_summary_vllm(text, page_url)
+    question = ""
     return summary, question
 
 
@@ -438,7 +429,68 @@ def _extract_mixed_content(tag: Tag, title: str, max_node_words: int) -> list:
                 text_buffer.append(t)
 
     flush_text()
-    return results
+    # 后处理：将过小的文本片段（如表格间过渡文字）合并到相邻块中
+    return _merge_tiny_text_fragments(results, max_node_words)
+
+
+def _merge_tiny_text_fragments(results: list, max_node_words: int) -> list:
+    """将过小的文本片段合并到相邻块中。
+
+    flush_text() 可能在表格之间产生极短的文本片段
+    （如"商家"、"附件二："、2-10 字符），这些碎片对 RAG 几乎无价值。
+    这里将过小的纯文本片段与其相邻块合并。
+
+    合并策略（最小修改原则）：
+    - 找到 < 20 字符的纯文本片段（sub_tag 为 None）
+    - 优先向前合并（追加到前一个块的 text 末尾）
+    - 如果前面没有块，则向后合并（插入到后一个块的 text 开头）
+    - 如果合并后超过 max_node_words，则保留原样
+    """
+    TINY_THRESHOLD = 20  # 小于此字符数视为碎片
+
+    if len(results) <= 1:
+        return results
+
+    merged = []
+    i = 0
+
+    while i < len(results):
+        sub_tag, sub_title, text = results[i]
+
+        # 正常块（非碎片）直接保留
+        if sub_tag is not None or len(text) >= TINY_THRESHOLD:
+            merged.append(results[i])
+            i += 1
+            continue
+
+        # --- 以下是碎片处理 ---
+        handled = False
+
+        # 策略 1：向前合并到 merged 中最后一个块
+        if merged:
+            prev = merged[-1]
+            prev_text = prev[2]
+            if len(prev_text) + len(text) + 1 <= max_node_words:
+                merged[-1] = (prev[0], prev[1], prev_text + "\n" + text)
+                handled = True
+
+        # 策略 2：向后合并到下一个块（修改 results 原地，下一个迭代会处理）
+        if not handled and i + 1 < len(results):
+            next_item = results[i + 1]
+            next_text = next_item[2]
+            if len(next_text) + len(text) + 1 <= max_node_words:
+                # 将碎片文本注入到下一个块的 text 开头
+                results[i + 1] = (next_item[0], next_item[1], text + "\n" + next_text)
+                # 跳过碎片：下一次迭代 i+1 会处理已注入文本的合并块
+                handled = True
+
+        # 策略 3：无法合并，保留原样
+        if not handled:
+            merged.append(results[i])
+
+        i += 1
+
+    return merged
 
 
 def _split_table_into_chunks(
@@ -503,10 +555,11 @@ def _split_table_into_chunks(
             current_text += row_text
             current_words += row_words
 
-    # 提交最后一个块
-    text = clean_invisible(current_text.strip())
-    if text:
-        chunks.append((text, row_range_start, len(rows)))
+    # 提交最后一个块（仅当包含数据行时才提交，避免幽灵表头块）
+    if current_words > header_words:
+        text = clean_invisible(current_text.strip())
+        if text:
+            chunks.append((text, row_range_start, len(rows)))
 
     return chunks
 
@@ -517,13 +570,11 @@ def generate_block_documents(
     block_tree: list,
     max_node_words: int,
     page_url: str = "unknown.html",
-    summary_model=None,
-    summary_tokenizer=None,
     time_value: str = "",
     gen_question: bool = False,
-    use_vllm: bool = True,
+    **kwargs,  # backward compat: use_vllm, summary_model, summary_tokenizer (ignored)
 ) -> list:
-    """生成结构化文档块，支持表格自动切分和 LLM 摘要生成。
+    """生成结构化文档块，支持表格自动切分和 vLLM 摘要生成。
 
     输出包含 block_path（论文中的块路径，用于唯一标识和剪枝）和
     html_content（保留 HTML 结构，论文核心观点：HTML 优于纯文本）。
@@ -532,11 +583,8 @@ def generate_block_documents(
         block_tree: build_block_tree 返回的块列表 [(Tag, path, is_leaf), ...]
         max_node_words: 每个块的最大词数
         page_url: 来源页面 URL
-        summary_model: ChatGLM 模型实例
-        summary_tokenizer: ChatGLM tokenizer
         time_value: 文档时间戳
         gen_question: 是否生成代表性问题
-        use_vllm: 使用 vLLM（True）还是 ChatGLM（False）
 
     Returns:
         文档块元数据列表
@@ -558,7 +606,7 @@ def generate_block_documents(
             logger.debug(f"📊 表格类型，执行按行拼接切分")
             for text, row_start, row_end in _split_table_into_chunks(table_tag, title, max_node_words):
                 summary, question = _generate_summary_and_question(
-                    text, page_url, use_vllm, summary_model, summary_tokenizer, gen_question
+                    text, page_url, gen_question
                 )
                 doc_meta.append(_make_chunk_dict(
                     chunk_idx, page_name,
@@ -576,7 +624,7 @@ def generate_block_documents(
                     if not sub_text:
                         continue
                     summary, question = _generate_summary_and_question(
-                        sub_text, page_url, use_vllm, summary_model, summary_tokenizer, gen_question
+                        sub_text, page_url, gen_question
                     )
                     sub_html = str(sub_tag) if sub_tag and isinstance(sub_tag, Tag) else ""
                     doc_meta.append(_make_chunk_dict(
@@ -593,7 +641,7 @@ def generate_block_documents(
                     continue
 
                 summary, question = _generate_summary_and_question(
-                    text, page_url, use_vllm, summary_model, summary_tokenizer, gen_question
+                    text, page_url, gen_question
                 )
                 doc_meta.append(_make_chunk_dict(
                     chunk_idx, page_name, title[:128],
@@ -612,12 +660,10 @@ async def generate_block_documents_async(
     block_tree: list,
     max_node_words: int,
     page_url: str = "unknown.html",
-    summary_model=None,
-    summary_tokenizer=None,
     time_value: str = "",
     gen_question: bool = False,
-    use_vllm: bool = True,
     batch_size: int = 32,
+    **kwargs,  # backward compat: use_vllm, summary_model, summary_tokenizer (ignored)
 ) -> list:
     """异步批量生成文档块，先切分再批量并发生成摘要。"""
     doc_meta = []

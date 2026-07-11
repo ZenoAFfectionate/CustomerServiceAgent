@@ -16,7 +16,7 @@
     8. 保存更新后的 metadata.json。
 
 用法：
-    from clawer.crawler import RulesCrawler
+    from crawler.crawler import RulesCrawler
     crawler = RulesCrawler()
     crawler.run()
 """
@@ -29,7 +29,7 @@ from typing import Optional
 
 from playwright.sync_api import sync_playwright, Page
 
-from clawer import config as cfg
+from crawler import config as cfg
 
 
 # ======================== 工具函数 ========================

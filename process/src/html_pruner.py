@@ -429,26 +429,35 @@ def default_embed_fn(texts: List[str]) -> List[List[float]]:
 
 
 def default_rerank_fn(query: str, texts: List[str]) -> List[float]:
-    """默认精排后端：调用 TEI /rerank 接口，返回与输入顺序一致的分数列表。
+    """默认精排后端：调用 vLLM /rerank 接口，返回与输入顺序一致的分数列表。
 
-    读取环境变量 TEI_RERANK_URL（默认 http://localhost:8081）。测试环境应注入
-    mock，不会走到此函数。
+    读取环境变量 RERANK_API_URL（默认 http://localhost:8012），支持 TEI 和 vLLM
+    两种返回格式。测试环境应注入 mock，不会走到此函数。
     """
     import requests
 
     if not texts:
         return []
-    url = os.environ.get("TEI_RERANK_URL", "http://localhost:8081")
+    url = os.environ.get("RERANK_API_URL", "http://localhost:8012")
     resp = requests.post(
         f"{url}/rerank",
-        json={"query": query, "texts": texts},
+        json={"query": query, "documents": texts},
         timeout=CONFIG.get("vllm_timeout", 60),
     )
     resp.raise_for_status()
-    results = resp.json()
+    data = resp.json()
+
     scores = [0.0] * len(texts)
-    for item in results:
-        idx = item.get("index")
-        if idx is not None and 0 <= idx < len(texts):
-            scores[idx] = item.get("score", 0.0)
+    # vLLM 格式: {"results": [{"index": N, "relevance_score": S}, ...]}
+    if "results" in data:
+        for item in data["results"]:
+            idx = item.get("index")
+            if idx is not None and 0 <= idx < len(texts):
+                scores[idx] = item.get("relevance_score", 0.0)
+    # TEI 格式: [{"index": N, "score": S}, ...]
+    elif isinstance(data, list):
+        for item in data:
+            idx = item.get("index")
+            if idx is not None and 0 <= idx < len(texts):
+                scores[idx] = item.get("score", 0.0)
     return scores

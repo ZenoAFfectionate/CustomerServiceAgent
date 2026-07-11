@@ -5,7 +5,7 @@
 #
 # 用法:
 #   bash scripts/build_index.sh
-#   SOURCE_DIR=process/dataset/html_cleaned_block bash scripts/build_index.sh
+#   SOURCE_DIR=process/data bash scripts/build_index.sh
 #
 #   # 切换到真实 Milvus/ES/TEI 后端
 #   RAG_VECTOR_BACKEND=milvus RAG_KEYWORD_BACKEND=es RAG_EMBED_BACKEND=tei \
@@ -51,7 +51,7 @@ if [[ ${#MISSING[@]} -gt 0 ]]; then
 fi
 ok "核心依赖检查通过"
 
-SOURCE_DIR="${SOURCE_DIR:-process/dataset/html_cleaned_block}"
+SOURCE_DIR="${SOURCE_DIR:-process/data}"
 
 echo "=========================================="
 echo "  RAG 索引构建"

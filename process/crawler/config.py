@@ -35,11 +35,11 @@ NAV_TIMEOUT_MS = 30000
 HEADLESS = True
 
 # ======================== 存储路径 ========================
-# clawer/ 目录本身
-CLAWER_DIR = os.path.dirname(os.path.abspath(__file__))
+# crawler/ 目录本身
+CRAWLER_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# process/ 目录（clawer 的上级）
-PROCESS_ROOT = os.path.dirname(CLAWER_DIR)
+# process/ 目录（crawler 的上级）
+PROCESS_ROOT = os.path.dirname(CRAWLER_DIR)
 
 # 数据输出根目录：process/data/抖店规则中心/
 # 与现有 process/data/ 下的其他数据源并列，互不干扰

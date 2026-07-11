@@ -27,33 +27,6 @@
     结构化 JSON 文档块 → 向量数据库 / ES / LLM 上下文
 ```
 
-### 目录结构
-
-```
-process/
-├── main.py                  # 全流程入口（清洗 + 分块 + 摘要）
-├── README.md                # 本文件
-├── data/                    # 原始 HTML 数据（6 个子目录，~1643 文件）
-│   ├── 抖音电商规则中心/    # ~790 个 .html
-│   ├── 巨量本地推帮助中心/  # 121 个 .html
-│   ├── 巨量广告规则中心/    # 324 个 .html
-│   ├── 巨量千川帮助中心/    # 230 个 .html
-│   ├── 巨量千川规则中心/    # 157 个 .html
-│   ├── 粤理知识库/          # 20 .html + 1 .xlsx
-│   └── DESCRIPTION.md       # 数据集详细分析报告
-├── src/
-│   ├── html_utils.py         # HTML 清洗 + 结构化分块（核心模块）
-│   ├── html_pruner.py        # HtmlRAG 两阶段块树剪枝
-│   ├── text_process.py       # 文本处理、摘要生成、文档块持久化
-│   └── __init__.py
-├── utils/
-│   ├── config.py             # 配置加载（.env + config.json）
-│   ├── llm_api.py             # LLM API 调用（vLLM / ChatGLM）
-│   └── jieba_util.py         # jieba 分词工具
-├── clawer/                   # HTML 爬虫脚本
-└── logs/                     # 运行日志
-```
-
 ---
 
 ## 二、HTML 清洗详解
@@ -240,36 +213,35 @@ process/
 
 ## 五、使用方法
 
-### 5.1 全流程（清洗 + 分块 + 摘要）
+所有输出统一存放在 `process/data/` 目录下（文件夹级后缀，保留子目录结构）：
+- 清洗后：`{数据集名}_cleaned/`（子目录结构和文件名不变）
+- 分块后：`{数据集名}_blocked/`（子目录结构不变，.html → .json）
+
+### 5.1 全流程（清洗 + 分块 + vLLM 摘要）
 
 ```bash
-# 使用 vLLM 远程摘要
 PYTHONPATH=process python -m main \
-    --source-dir process/data \
-    --step all \
-    --use-vllm
-
-# 使用本地 ChatGLM 摘要
-PYTHONPATH=process python -m main \
-    --source-dir process/data \
+    --source-dir process/data/抖音电商规则中心 \
     --step all
+# 输出：process/data/抖音电商规则中心_cleaned/ + process/data/抖音电商规则中心_blocked/
 ```
 
 ### 5.2 仅清洗
 
 ```bash
 PYTHONPATH=process python -m main \
-    --source-dir process/data \
+    --source-dir process/data/抖音电商规则中心 \
     --step clean
+# 输出：process/data/抖音电商规则中心_cleaned/
 ```
 
-### 5.3 仅分块（需先完成清洗）
+### 5.3 仅分块（需先完成清洗，需要 vLLM 服务在运行）
 
 ```bash
 PYTHONPATH=process python -m main \
-    --html-dir process/data_cleaned \
-    --step block \
-    --use-vllm
+    --html-dir process/data/抖音电商规则中心_cleaned \
+    --step block
+# 输出：process/data/抖音电商规则中心_blocked/
 ```
 
 ### 5.4 HtmlRAG 剪枝（运行时检索阶段）
@@ -287,7 +259,60 @@ pruned_html = two_stage_prune(
 
 ---
 
-## 六、配置说明
+## 六、评测数据集构造
+
+> 完整方案（Prompt 模板、代码设计、成本估算等）详见 [IMPROVEMENT.md](IMPROVEMENT.md)，此处仅概述核心思路。
+
+### 6.1 核心思想
+
+**用大模型从分块数据"反向生成"评测集**：以每个 chunk 的内容作为标准答案素材，让 LLM 模拟真实用户提出可能的问题（query），从而自动得到 `(query, 正确 chunk, 参考答案)` 三元组，供 RAG 检索与生成评测使用。
+
+**关键前提：只依赖 chunk 文件**（`_blocked/*.json`）。每个 chunk 已内嵌 `text` / `summary` / `title` / `html_content` 及目录分类信息，构造评测所需素材全部齐备，无需再读取 HTML 文件。
+
+### 6.2 主要步骤
+
+```
+_blocked/*.json
+    │
+    ▼  Step 1: 智能采样（无 LLM）
+    │   分层采样 200-500 个代表性 chunk，覆盖全部知识分类
+    │
+    ▼  Step 2: LLM 生成 query（核心）
+    │   两阶段 Prompt：① 发散生成多角度问题 ② 格式化 + 提取参考答案
+    │   每个 chunk 产出若干条 (query, reference_answer)
+    │
+    ▼  Step 3: 质量过滤与去重
+    │   规则过滤 + LLM 自检（防幻觉/防模糊）+ embedding 语义去重
+    │
+    ▼  Step 4: 高级用例构造（可选）
+    │   LLM 生成混淆 query（Hard Negative）、跨文档综合、多轮追问
+    │
+    ▼  Step 5: 组装 + 入库回填
+        导出标准格式 → 入库检索 → 回填 global_chunk_idx → 人工抽检
+```
+
+### 6.3 双层评测设计
+
+评测集同时支持两个层级，兼顾"立即可用"与"精确度量"：
+
+| 层级 | 匹配依据 | 指标 | 前置条件 |
+|------|---------|------|---------|
+| **Layer 1** | `page_name` / 目录分类 | 文档级命中率 | 入库前即可用 |
+| **Layer 2** | `global_chunk_idx` | Recall@K / MRR / NDCG | 需入库后回填 ID |
+
+**桥梁字段** `relevant_chunk_keys`（用 `(page_name, chunk_idx)` 标识块）在分块阶段即可确定，入库后再映射为 `global_chunk_idx`，解决"精确 ID 需入库才分配"的矛盾。
+
+### 6.4 与现有评测对接
+
+产出的 `eval_cases.json` 兼容项目已有评测代码：
+
+- `rag/evaluation/retrieval_eval.py` —— 检索指标（Recall/Precision/MRR/NDCG）
+- `rag/evaluation/generation_eval.py` —— 生成指标（groundedness/引用覆盖/lexical_f1）
+- `rag/evaluation/rag_e2e_eval.py` —— 端到端评测编排
+
+---
+
+## 七、配置说明
 
 配置文件：`CustomerServiceAgent/config/config.json`
 
@@ -296,7 +321,7 @@ pruned_html = two_stage_prune(
 | `lang` | `zh` | 语言（影响词数计算方式） |
 | `max_node_words_embed` | 4096 | 分块最大词数 |
 | `min_node_words_embed` | 48 | 分块最小词数 |
-| `llm_model` | `THUDM/glm-4-9b-chat` | 本地摘要模型 |
+| `llm_model` | `Qwen/Qwen3.5-2B` | vLLM 摘要模型 |
 | `embed_model` | `Qwen/Qwen3-Embedding-4B` | 嵌入模型 |
 | `rerank_model` | `Qwen/Qwen3-Reranker-4B` | 精排模型 |
 | `vllm_api_url` | `http://localhost:8011/v1/chat/completions` | vLLM API |
@@ -307,7 +332,7 @@ pruned_html = two_stage_prune(
 
 ---
 
-## 七、依赖
+## 八、依赖
 
 ```
 beautifulsoup4 >= 4.12
@@ -316,14 +341,14 @@ scikit-learn >= 1.3
 numpy >= 1.24
 aiohttp >= 3.9（异步摘要）
 python-dotenv（环境变量加载）
-transformers + torch（本地 ChatGLM 模式）
+playwright（爬虫浏览器自动化）
 ```
 
 ---
 
-## 八、审查与修复记录
+## 九、审查与修复记录
 
-### 8.1 代码审查发现的问题与修复
+### 9.1 代码审查发现的问题与修复
 
 | 编号 | 问题描述 | 严重性 | 修复方式 |
 |------|----------|--------|---------|
@@ -336,7 +361,7 @@ transformers + torch（本地 ChatGLM 模式）
 | C7 | decompose 后标签 attrs 变 None，后续迭代报 AttributeError | **中等** | 增加 `tag.attrs is None` 安全检查 |
 | C8 | `test_config.py::test_data_dir_exists` 检查 `process/dataset`（不存在） | **轻微** | 改为检查父目录 `process/` 存在 |
 
-### 8.2 测试覆盖
+### 9.2 测试覆盖
 
 | 测试文件 | 测试数 | 覆盖范围 |
 |---------|--------|---------|

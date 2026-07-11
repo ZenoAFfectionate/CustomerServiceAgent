@@ -5,10 +5,10 @@
 用法：
     # 在项目根目录下执行（增量更新，默认行为）
     cd CustomerServiceAgent
-    PYTHONPATH=process python -m process.clawer.run
+    PYTHONPATH=process python -m process.crawler.run
 
-    # 或直接在 clawer 目录下执行
-    cd process/clawer
+    # 或直接在 crawler 目录下执行
+    cd process/crawler
     python run.py
 
 可选参数：
@@ -27,8 +27,8 @@ import argparse
 if __name__ == "__main__" and __package__ is None:
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from clawer import config as cfg
-from clawer.crawler import RulesCrawler
+from crawler import config as cfg
+from crawler.crawler import RulesCrawler
 
 
 def main():

@@ -82,8 +82,9 @@ for env_name in ("dev", "prod"):
 CONFIG["_project_root"] = PROJECT_ROOT
 
 # ======================== 派生常量 ========================
-CONFIG["tei_embed_url"] = _env_or_config("TEI_EMBED_URL", _RAW_CONFIG, "http://localhost:8080")
-CONFIG["tei_rerank_url"] = _env_or_config("TEI_RERANK_URL", _RAW_CONFIG, "http://localhost:8081")
+CONFIG["tei_embed_url"] = _env_or_config("TEI_EMBED_URL", _RAW_CONFIG, "http://localhost:8010")
+CONFIG["tei_rerank_url"] = _env_or_config("TEI_RERANK_URL", _RAW_CONFIG, "http://localhost:8012")
+CONFIG["rerank_api_url"] = _env_or_config("RERANK_API_URL", _RAW_CONFIG, "http://localhost:8012")
 
 DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "")
 DEEPSEEK_BASE_URL = os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com")

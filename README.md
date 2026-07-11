@@ -352,26 +352,28 @@ bash scripts/start_tei.sh --down
 
 ### 4️⃣ 处理 HTML 数据
 
+所有输出统一存放在 `process/data/` 目录下（文件夹级后缀 `_cleaned` / `_blocked`，保留子目录结构）。
+
 ```bash
-# 将 HTML 文件放入 process/dataset/html_source/
-bash scripts/process_HTMLdata.sh
+# 将 HTML 文件放入 process/data/数据集名/
+# 一键运行全流程（清洗 + 分块）
+HTML_SOURCE=process/data/抖音电商规则中心 bash scripts/process_HTMLdata.sh
 
 # 或使用 main.py 灵活控制（PYTHONPATH 需同时包含 process 与 process/src）
 export PYTHONPATH=process:process/src
 
 # 全流程（清洗 + 分块）
-python -m main --source-dir process/dataset/html_source
+python -m main --source-dir process/data/抖音电商规则中心
 
 # 仅清洗
-python -m main --source-dir process/dataset/html_source --step clean
+python -m main --source-dir process/data/抖音电商规则中心 --step clean
 
 # 仅分块（需先完成清洗）
-python -m main --html-dir process/dataset/html_cleaned --step block
+python -m main --html-dir process/data/抖音电商规则中心_cleaned --step block
 
-# 使用 vLLM 远程摘要（无需本地加载 ChatGLM）
-python -m main --source-dir process/dataset/html_source --use-vllm
-
-# 输出：process/dataset/html_cleaned_block/*.json
+# 输出：
+#   process/data/抖音电商规则中心_cleaned/   ← 清洗后 HTML
+#   process/data/抖音电商规则中心_blocked/   ← 分块后 JSON
 ```
 
 ### 5️⃣ 模型微调（可选）

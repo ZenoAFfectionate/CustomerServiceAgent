@@ -20,8 +20,8 @@ from typing import Optional
 
 from playwright.sync_api import sync_playwright, Page
 
-from clawer import config as cfg
-from clawer.centers import CenterConfig
+from crawler import config as cfg
+from crawler.centers import CenterConfig
 
 
 # ======================== 工具函数 ========================

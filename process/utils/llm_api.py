@@ -127,8 +127,11 @@ def _build_summary_prompt(text: str, page_url: str, max_new_tokens: int) -> str:
 
 # ======================== vLLM 摘要 ========================
 
-def generate_summary_vllm(text: str, page_url: str, max_new_tokens: int = 150, model: str = "glm") -> str:
+def generate_summary_vllm(text: str, page_url: str, max_new_tokens: int = 150, model: str = None) -> str:
     """同步调用 vLLM 生成摘要。短文本直接截断返回。"""
+    if model is None:
+        model = CONFIG.get("llm_model", "Qwen/Qwen3.5-2B")
+
     if len(text) < max_new_tokens * 2:
         logger.debug("⚠️ 文本长度不足，使用原文本")
         return text[:max_new_tokens]
@@ -158,10 +161,13 @@ def generate_summary_vllm(text: str, page_url: str, max_new_tokens: int = 150, m
         return text[:max_new_tokens]
 
 
-async def generate_summary_vllm_async(text: str, page_url: str, model: str = "glm", max_new_tokens: int = 150) -> str:
+async def generate_summary_vllm_async(text: str, page_url: str, model: str = None, max_new_tokens: int = 150) -> str:
     """异步调用 vLLM 生成摘要，支持多实例负载均衡与失败重试。"""
     text = text.strip().replace("\x00", "")
     fallback_summary = text[:max_new_tokens]
+
+    if model is None:
+        model = CONFIG.get("llm_model", "Qwen/Qwen3.5-2B")
 
     prompt = _build_summary_prompt(text, page_url, max_new_tokens)
 
@@ -285,7 +291,7 @@ def generate_question_ChatGLM(
 async def generate_question_vllm_async(
     text: str,
     page_url: str,
-    model: str = "glm",
+    model: str = None,
     max_new_tokens: int = 64,
     fallback_question: str = "该内容可构造相关业务问题",
 ) -> str:
@@ -297,6 +303,8 @@ async def generate_question_vllm_async(
     一致性 BUG，见代码审查报告 M1）。
     """
     text = text.strip().replace("\x00", "")
+    if model is None:
+        model = CONFIG.get("llm_model", "Qwen/Qwen3.5-2B")
     prompt = _build_question_prompt(text, page_url)
 
     payload = {
@@ -379,9 +387,11 @@ def rewrite_query_ChatGLM(dialogue: list, final_query: str, model, tokenizer, ma
         return fallback
 
 
-def rewrite_query_vllm(dialogue: list, final_query: str, model: str = "glm", max_new_tokens: int = 128) -> str:
+def rewrite_query_vllm(dialogue: list, final_query: str, model: str = None, max_new_tokens: int = 128) -> str:
     """同步调用 vLLM 重写多轮对话中的模糊问题。"""
     fallback = final_query
+    if model is None:
+        model = CONFIG.get("llm_model", "Qwen/Qwen3.5-2B")
     prompt = (
         "你是一个问题重写API，只会重写优化或复读用户的问题。\n"
         "用户提出的问题可能存在复杂指代、上下文依赖或表达模糊等问题。\n"
@@ -467,7 +477,7 @@ async def call_vllm_with_retry_weighted(payload: dict, timeout: int = 15, max_re
 
 # ======================== 异步 Query 重写 ========================
 
-async def rewrite_query_vllm_async(dialogue: list, final_query: str, model: str = "glm", max_new_tokens: int = 1024) -> str:
+async def rewrite_query_vllm_async(dialogue: list, final_query: str, model: str = None, max_new_tokens: int = 1024) -> str:
     """异步调用 vLLM 重写多轮对话中的模糊问题。
 
     Args:
@@ -480,6 +490,9 @@ async def rewrite_query_vllm_async(dialogue: list, final_query: str, model: str 
         重写后的清晰问题；若无需重写则返回原问题
     """
     fallback = final_query
+
+    if model is None:
+        model = CONFIG.get("llm_model", "Qwen/Qwen3.5-2B")
 
     if _should_skip_rewrite(final_query, dialogue):
         return fallback
